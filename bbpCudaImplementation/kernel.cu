@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <math.h>
+#include <time.h>
 
 struct sJ {
 	double s1, s4, s5, s6;
@@ -13,25 +14,43 @@ cudaError_t addWithCuda(sJ *c, unsigned int size, long digit);
 
 __device__ const long baseSystem = 16;
 
-__device__ void modExp(long long base, long exp, long long mod, long *output) {
-	long long mask = 1;
-	long long result = 1;
+
+//perform binary exponention taking modulus of both base and result at each step
+//64 bit integers are required to accurately find the modular exponents of numbers when mod is >= ~10e6
+//however, with CUDA 64 bit integers are implemented at compile time as two 32 bit integers
+//this produces about a 10x slowdown over computations using 32 bit integers
+__device__ void modExp(unsigned long long base, long exp, long mod, long *output) {
+	const unsigned long mask = 1;
+	unsigned long long result = 1;
+
+	//only perform modulus operation during loop if result or base is >= 2^32 (in order to prevent either from overflowing)
+	//this saves 30% computation time over performing modulus in every loop iteration
+	const unsigned long long modCond = 0x100000000;//2^32
+
 	while (exp > 0) {
-		if (exp&mask) result *= base;
+		if (exp&mask) {
+			result *= base;
+			if (result >= modCond) result %= mod;
+		}
 		base *= base;
-		result %= mod;
-		base %= mod;
+		if (base >= modCond) base %= mod;
 		exp >>= 1;
 	}
+
+	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
+	result %= mod;
 	*output = result;
 }
 
+//find ( 16^n % mod ) / mod and add to partialSum
 __device__ void fractionalPartOfSum(long exp, long mod, double *partialSum) {
 	long expModResult = 0;
 	modExp(baseSystem, exp, mod, &expModResult);
 	*partialSum += ((double)expModResult) / ((double)mod);
 }
 
+//stride over all parts of summation in bbp formula where k <= n
+//to compute partial sJ sums
 __device__ void bbp(long n, long start, long stride, sJ *output) {
 
 	double s1 = 0.0, s4 = 0.0, s5 = 0.0, s6 = 0.0;
@@ -57,31 +76,39 @@ __device__ void bbp(long n, long start, long stride, sJ *output) {
 	output[start].s6 = s6;
 }
 
+//determine from thread and block position where to begin stride
+//and how wide stride is
 __global__ void bbpKernel(sJ *c, long digit)
 {
-	int i = threadIdx.x;
-	bbp(digit, i, blockDim.x, c);
+	int stride = blockDim.x * gridDim.x;
+	int i = threadIdx.x + blockDim.x * blockIdx.x;
+	bbp(digit, i, stride, c);
 }
 
-__global__ void reduceSJKernel(sJ *c, int stride) {
-	int i = threadIdx.x;
-	int augend = i + stride;
-	c[i].s1 += c[augend].s1;
-	c[i].s4 += c[augend].s4;
-	c[i].s5 += c[augend].s5;
-	c[i].s6 += c[augend].s6;
+//stride over current leaves of reduce tree
+__global__ void reduceSJKernel(sJ *c, int offset, int stop) {
+	int stride = blockDim.x * gridDim.x;
+	int i = threadIdx.x + blockDim.x * blockIdx.x;
+	while (i < stop) {
+		int augend = i + offset;
+		c[i].s1 += c[augend].s1;
+		c[i].s4 += c[augend].s4;
+		c[i].s5 += c[augend].s5;
+		c[i].s6 += c[augend].s6;
+		i += stride;
+	}
 }
 
 //standard tree-based parallel reduce
 cudaError_t reduceSJ(sJ *c, unsigned int size) {
 	cudaError_t cudaStatus;
 	while (size > 1) {
-		int nextSize = (size + 1) / 2;
+		int nextSize = (size + 1) >> 1;
 
 		//size is odd
-		if (size&1) reduceSJKernel<< <1, nextSize - 1 >> >(c, nextSize);
+		if (size&1) reduceSJKernel<< <32, 32 >> >(c, nextSize, nextSize - 1);
 		//size is even
-		else reduceSJKernel<< <1, nextSize >> >(c, nextSize);
+		else reduceSJKernel<< <32, 32 >> >(c, nextSize, nextSize);
 
 		// Check for any errors launching the kernel
 		cudaStatus = cudaGetLastError();
@@ -103,6 +130,9 @@ cudaError_t reduceSJ(sJ *c, unsigned int size) {
 	return cudaStatus;
 }
 
+//compute four steps of sJ sums for i > n and add to sJ sums found previously
+//combine sJs according to bbp formula
+//multiply by 16^5 to extract five digits of pi starting at n
 long finalizeDigit(sJ input, long n) {
 	double reducer = 1.0;
 	double s1 = input.s1;
@@ -136,11 +166,12 @@ long finalizeDigit(sJ input, long n) {
 
 int main()
 {
-	const int arraySize = 256;
-	const long digitPosition = 1000000;
+	const int arraySize = 128 * 128;
+	const long digitPosition = 99999999;
 	sJ c[arraySize];
 
-	// Add vectors in parallel.
+	clock_t start = clock();
+
 	cudaError_t cudaStatus = addWithCuda(c, arraySize, digitPosition);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "addWithCuda failed!");
@@ -149,8 +180,12 @@ int main()
 
 	long hexDigit = finalizeDigit(c[0], digitPosition);
 
+	clock_t end = clock();
+
 	printf("pi at hexadecimal digit %d is %X\n",
 		digitPosition, hexDigit);
+
+	printf("Computed in %.8f seconds\n", (double)(end - start) / CLOCKS_PER_SEC);
 
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -184,7 +219,7 @@ cudaError_t addWithCuda(sJ *c, unsigned int size, long digit)
 	}
 
 	// Launch a kernel on the GPU with one thread for each element.
-	bbpKernel << <1, size >> >(dev_c, digit);
+	bbpKernel << <128, 128 >> >(dev_c, digit);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
