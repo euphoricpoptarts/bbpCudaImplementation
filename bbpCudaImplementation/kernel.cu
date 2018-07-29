@@ -10,15 +10,15 @@ struct sJ {
 	double s1, s4, s5, s6;
 };
 
-cudaError_t addWithCuda(sJ *c, unsigned int size, long digit);
+cudaError_t addWithCuda(sJ *c, unsigned int size, long long digit);
 
 __device__ const long baseSystem = 16;
 
 __device__ void modMultiplyLeftToRight(const unsigned long long multiplicand, const unsigned long long multiplier, unsigned long long mod, unsigned long long *output) {
 	unsigned long long result = multiplicand;
 
-	//only perform modulus operation during loop if result is >= 2^62 (in order to prevent overflowing)
-	const unsigned long long modCond = 0x4000000000000000;//2^62
+	//only perform modulus operation during loop if result is >= 2^61 (in order to prevent overflowing)
+	const unsigned long long modCond = 0x2000000000000000;//2^61
 
 	unsigned long long highestBitMask = 0x8000000000000000;
 
@@ -70,8 +70,8 @@ __device__ void modExp(unsigned long long base, long exp, long mod, long *output
 __device__ void modExpLeftToRight(const unsigned long long base, const unsigned long long exp, unsigned long long mod, unsigned long long highestBitMask, long long *output) {
 	unsigned long long result = base;
 
-	//only perform modulus operation during loop if result is >= 2^30 (in order to prevent overflowing)
-	const unsigned long modCond = 0x40000000;//2^30
+	//only perform modulus operation during loop if result is >= 2^29 (in order to prevent overflowing)
+	const unsigned long long modCond = 0x20000000;//2^29
 
 	while (highestBitMask > 1) {
 		if (result >= modCond) result %= mod;
@@ -94,13 +94,13 @@ __device__ void fractionalPartOfSum(long long exp, long long mod, double *partia
 
 //stride over all parts of summation in bbp formula where k <= n
 //to compute partial sJ sums
-__device__ void bbp(long n, long start, long stride, sJ *output) {
+__device__ void bbp(long long n, long long start, long long stride, sJ *output) {
 
 	double s1 = 0.0, s4 = 0.0, s5 = 0.0, s6 = 0.0;
 	double trash = 0.0;
 	long long highestExpBit = 1;
 	while (highestExpBit <= n)	highestExpBit <<= 1;
-	for (long k = start; k <= n; k += stride) {
+	for (long long k = start; k <= n; k += stride) {
 		while (highestExpBit > (n - k))  highestExpBit >>= 1;
 		long long mod = 8 * k + 1;
 		fractionalPartOfSum(n - k, mod, &s1, highestExpBit);
@@ -126,8 +126,8 @@ __device__ void bbp(long n, long start, long stride, sJ *output) {
 //and how wide stride is
 __global__ void bbpKernel(sJ *c, long digit)
 {
-	int stride = blockDim.x * gridDim.x;
-	int i = threadIdx.x + blockDim.x * blockIdx.x;
+	long long stride = blockDim.x * gridDim.x;
+	long long i = threadIdx.x + blockDim.x * blockIdx.x;
 	bbp(digit, i, stride, c);
 }
 
@@ -179,7 +179,7 @@ cudaError_t reduceSJ(sJ *c, unsigned int size) {
 //compute four steps of sJ sums for i > n and add to sJ sums found previously
 //combine sJs according to bbp formula
 //multiply by 16^5 to extract five digits of pi starting at n
-long finalizeDigit(sJ input, long n) {
+long finalizeDigit(sJ input, long long n) {
 	double reducer = 1.0;
 	double s1 = input.s1;
 	double s4 = input.s4;
@@ -213,7 +213,7 @@ long finalizeDigit(sJ input, long n) {
 int main()
 {
 	const int arraySize = 128 * 128;
-	const long digitPosition = 999999999;
+	const long long digitPosition = 999999999;
 	sJ c[arraySize];
 
 	clock_t start = clock();
@@ -245,7 +245,7 @@ int main()
 }
 
 // Helper function for using CUDA
-cudaError_t addWithCuda(sJ *c, unsigned int size, long digit)
+cudaError_t addWithCuda(sJ *c, unsigned int size, long long digit)
 {
 	sJ *dev_c = 0;
 	cudaError_t cudaStatus;
