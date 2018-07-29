@@ -14,8 +14,29 @@ cudaError_t addWithCuda(sJ *c, unsigned int size, long digit);
 
 __device__ const long baseSystem = 16;
 
+__device__ void modMultiplyLeftToRight(const unsigned long long multiplicand, const unsigned long long multiplier, unsigned long long mod, unsigned long long *output) {
+	unsigned long long result = multiplicand;
 
-//perform binary exponention taking modulus of both base and result at each step
+	//only perform modulus operation during loop if result is >= 2^62 (in order to prevent overflowing)
+	const unsigned long long modCond = 0x4000000000000000;//2^62
+
+	unsigned long long highestBitMask = 0x8000000000000000;
+
+	while (highestBitMask > multiplier) highestBitMask >>= 1;
+
+	while (highestBitMask > 1) {
+		if (result >= modCond) result %= mod;
+		result <<= 1;
+		highestBitMask >>= 1;
+		if (multiplier&highestBitMask)	result += multiplicand;
+	}
+
+	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
+	result %= mod;
+	*output = result;
+}
+
+//perform right-to-left binary exponention taking modulus of both base and result at each step
 //64 bit integers are required to accurately find the modular exponents of numbers when mod is >= ~10e6
 //however, with CUDA 64 bit integers are implemented at compile time as two 32 bit integers
 //this produces about a 10x slowdown over computations using 32 bit integers
@@ -42,10 +63,32 @@ __device__ void modExp(unsigned long long base, long exp, long mod, long *output
 	*output = result;
 }
 
+//using left-to-right binary exponentiation
+//the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
+//this version allows base to be constant, thus reducing total number of moduli which must be calculated
+//geometric mean of multiplication inputs is also substantially lower, allowing faster average multiplications
+__device__ void modExpLeftToRight(const unsigned long long base, const unsigned long long exp, unsigned long long mod, unsigned long long highestBitMask, long long *output) {
+	unsigned long long result = base;
+
+	//only perform modulus operation during loop if result is >= 2^30 (in order to prevent overflowing)
+	const unsigned long modCond = 0x40000000;//2^30
+
+	while (highestBitMask > 1) {
+		if (result >= modCond) result %= mod;
+		modMultiplyLeftToRight(result, result, mod, &result);//result *= result;
+		highestBitMask >>= 1;
+		if (exp&highestBitMask)	modMultiplyLeftToRight(result, base, mod, &result);//result *= base;
+	}
+
+	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
+	result %= mod;
+	*output = result;
+}
+
 //find ( 16^n % mod ) / mod and add to partialSum
-__device__ void fractionalPartOfSum(long exp, long mod, double *partialSum) {
-	long expModResult = 0;
-	modExp(baseSystem, exp, mod, &expModResult);
+__device__ void fractionalPartOfSum(long long exp, long long mod, double *partialSum, long long highestBitMask) {
+	long long expModResult = 0;
+	modExpLeftToRight(baseSystem, exp, mod, highestBitMask, &expModResult);
 	*partialSum += ((double)expModResult) / ((double)mod);
 }
 
@@ -55,15 +98,18 @@ __device__ void bbp(long n, long start, long stride, sJ *output) {
 
 	double s1 = 0.0, s4 = 0.0, s5 = 0.0, s6 = 0.0;
 	double trash = 0.0;
+	long long highestExpBit = 1;
+	while (highestExpBit <= n)	highestExpBit <<= 1;
 	for (long k = start; k <= n; k += stride) {
-		long mod = 8 * k + 1;
-		fractionalPartOfSum(n - k, mod, &s1);
+		while (highestExpBit > (n - k))  highestExpBit >>= 1;
+		long long mod = 8 * k + 1;
+		fractionalPartOfSum(n - k, mod, &s1, highestExpBit);
 		mod += 3;
-		fractionalPartOfSum(n - k, mod, &s4);
+		fractionalPartOfSum(n - k, mod, &s4, highestExpBit);
 		mod += 1;
-		fractionalPartOfSum(n - k, mod, &s5);
+		fractionalPartOfSum(n - k, mod, &s5, highestExpBit);
 		mod += 1;
-		fractionalPartOfSum(n - k, mod, &s6);
+		fractionalPartOfSum(n - k, mod, &s6, highestExpBit);
 		//remove any integer part of s1-s6
 		s1 = modf(s1, &trash);
 		s4 = modf(s4, &trash);
@@ -167,7 +213,7 @@ long finalizeDigit(sJ input, long n) {
 int main()
 {
 	const int arraySize = 128 * 128;
-	const long digitPosition = 99999999;
+	const long digitPosition = 999999999;
 	sJ c[arraySize];
 
 	clock_t start = clock();
@@ -183,7 +229,7 @@ int main()
 	clock_t end = clock();
 
 	printf("pi at hexadecimal digit %d is %X\n",
-		digitPosition, hexDigit);
+		digitPosition + 1, hexDigit);
 
 	printf("Computed in %.8f seconds\n", (double)(end - start) / CLOCKS_PER_SEC);
 
