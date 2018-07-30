@@ -14,15 +14,58 @@ cudaError_t addWithCuda(sJ *c, unsigned int size, long long digit);
 
 __device__ const long baseSystem = 16;
 
+__device__ int printOnce = 0;
+
+//binary search to find highest 1 bit in multiplier
+__device__ void findMultiplierHighestBit(const unsigned long long multiplier, unsigned long long *output) {
+	
+	//if no bits are 1 then highest bit doesn't exist
+	if (!multiplier) {
+		*output = 0;
+		return;
+	}
+
+	int highestBitLocMax = 63;
+	int highestBitLocMin = 0;
+
+	int middle = (highestBitLocMax + highestBitLocMin) >> 1;
+
+	unsigned long long highestBit = 1L;
+	highestBit <<= middle;
+
+	int less = highestBit <= multiplier;
+
+	while (!((highestBit << 1) > multiplier && less)) {
+		if (less) highestBitLocMin = middle + 1;
+		else highestBitLocMax = middle - 1;
+		middle = (highestBitLocMax + highestBitLocMin) >> 1;
+		//this might not look necessary but it is
+		highestBit = 1L;
+		highestBit <<= middle;
+		less = highestBit <= multiplier;
+	}
+
+	/*unsigned long long highestBit2 = 0x8000000000000000;
+
+	while (highestBit2 > multiplier) highestBit2 >>= 1;
+
+	if (highestBit != highestBit2 && !printOnce) {
+		printf("multiplier %d error; highestBit %d; highestBit2 %d\n", multiplier, highestBit, highestBit2);
+		printOnce = 1;
+	}*/
+
+	*output = highestBit;
+}
+
 __device__ void modMultiplyLeftToRight(const unsigned long long multiplicand, const unsigned long long multiplier, unsigned long long mod, unsigned long long *output) {
 	unsigned long long result = multiplicand;
 
 	//only perform modulus operation during loop if result is >= 2^61 (in order to prevent overflowing)
 	const unsigned long long modCond = 0x2000000000000000;//2^61
 
-	unsigned long long highestBitMask = 0x8000000000000000;
+	unsigned long long highestBitMask = 0;
 
-	while (highestBitMask > multiplier) highestBitMask >>= 1;
+	findMultiplierHighestBit(multiplier, &highestBitMask);
 
 	while (highestBitMask > 1) {
 		if (result >= modCond) result %= mod;
@@ -70,18 +113,18 @@ __device__ void modExp(unsigned long long base, long exp, long mod, long *output
 __device__ void modExpLeftToRight(const unsigned long long base, const unsigned long long exp, unsigned long long mod, unsigned long long highestBitMask, long long *output) {
 	unsigned long long result = base;
 
-	//only perform modulus operation during loop if result is >= 2^29 (in order to prevent overflowing)
-	const unsigned long long modCond = 0x20000000;//2^29
+	////only perform modulus operation during loop if result is >= 2^29 (in order to prevent overflowing)
+	//const unsigned long long modCond = 0x20000000;//2^29
 
 	while (highestBitMask > 1) {
-		if (result >= modCond) result %= mod;
+		//if (result >= modCond) result %= mod;
 		modMultiplyLeftToRight(result, result, mod, &result);//result *= result;
 		highestBitMask >>= 1;
 		if (exp&highestBitMask)	modMultiplyLeftToRight(result, base, mod, &result);//result *= base;
 	}
 
 	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
-	result %= mod;
+	//result %= mod;
 	*output = result;
 }
 
