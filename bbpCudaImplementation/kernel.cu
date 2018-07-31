@@ -1,23 +1,56 @@
 
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+#include "device_atomic_functions.h"
 
 #include <stdio.h>
 #include <math.h>
 #include <time.h>
 
+#define TYPE unsigned long long
+#define INT_64 unsigned long long
+
 struct sJ {
 	double s1, s4, s5, s6;
 };
 
-cudaError_t addWithCuda(sJ *c, unsigned int size, long long digit);
+cudaError_t addWithCuda(sJ *c, unsigned int size, TYPE digit);
 
-__device__ const long baseSystem = 16;
+const int threadCountPerBlock = 32;
+const int blockCount = 256;
+
+__device__ const TYPE baseSystem = 16;
+__device__ const int baseExpOf2 = 4;
+
+__device__ const int typeSize = sizeof(TYPE) * 8 - 1;
+__device__ const int int64Size = sizeof(INT_64) * 8 - 1;
+__device__ const INT_64 int64ModCond = 0x40000000;
+__device__ const INT_64 int64MaxBit = 0x8000000000000000;
 
 __device__ int printOnce = 0;
 
+//not actually quick
+__device__ void quickMod(INT_64 input, const INT_64 mod, INT_64 *output) {
+
+	/*INT_64 copy = input;
+	INT_64 test = input % mod;*/
+	INT_64 temp = mod;
+	while (temp < input && !(temp&int64MaxBit)) temp <<= 1;
+	if (temp > input) temp >>= 1;
+	while (input >= mod && temp >= mod) {
+		if(input >= temp) input -= temp;
+		temp >>= 1;
+	}
+	/*if (input != test && !atomicAdd(&printOnce,1))
+	{
+		printf("input %llu mod %llu error\n", copy, mod);
+		printOnce = 1;
+	}*/
+	*output = input;
+}
+
 //binary search to find highest 1 bit in multiplier
-__device__ void findMultiplierHighestBit(const unsigned long long multiplier, unsigned long long *output) {
+__device__ void findMultiplierHighestBit(const TYPE multiplier, TYPE *output) {
 	
 	//if no bits are 1 then highest bit doesn't exist
 	if (!multiplier) {
@@ -25,12 +58,12 @@ __device__ void findMultiplierHighestBit(const unsigned long long multiplier, un
 		return;
 	}
 
-	int highestBitLocMax = 63;
+	int highestBitLocMax = typeSize;
 	int highestBitLocMin = 0;
 
 	int middle = (highestBitLocMax + highestBitLocMin) >> 1;
 
-	unsigned long long highestBit = 1L;
+	TYPE highestBit = 1L;
 	highestBit <<= middle;
 
 	int less = highestBit <= multiplier;
@@ -57,13 +90,14 @@ __device__ void findMultiplierHighestBit(const unsigned long long multiplier, un
 	*output = highestBit;
 }
 
-__device__ void modMultiplyLeftToRight(const unsigned long long multiplicand, const unsigned long long multiplier, unsigned long long mod, unsigned long long *output) {
-	unsigned long long result = multiplicand;
+__device__ void modMultiplyLeftToRight(const TYPE multiplicand, const TYPE multiplier, TYPE mod, TYPE *output) {
+	TYPE result = multiplicand;
 
-	//only perform modulus operation during loop if result is >= 2^61 (in order to prevent overflowing)
-	const unsigned long long modCond = 0x2000000000000000;//2^61
+	//only perform modulus operation during loop if result is >= (TYPE maximum + 1)/8 (in order to prevent overflowing)
+	TYPE modCond = 1L;
+	modCond <<= (typeSize - 2);//2^61
 
-	unsigned long long highestBitMask = 0;
+	TYPE highestBitMask = 0;
 
 	findMultiplierHighestBit(multiplier, &highestBitMask);
 
@@ -110,42 +144,42 @@ __device__ void modExp(unsigned long long base, long exp, long mod, long *output
 //the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
 //this version allows base to be constant, thus reducing total number of moduli which must be calculated
 //geometric mean of multiplication inputs is also substantially lower, allowing faster average multiplications
-__device__ void modExpLeftToRight(const unsigned long long base, const unsigned long long exp, unsigned long long mod, unsigned long long highestBitMask, long long *output) {
-	unsigned long long result = base;
+__device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask, TYPE *output) {
+	INT_64 result = baseSystem;
 
-	////only perform modulus operation during loop if result is >= 2^29 (in order to prevent overflowing)
-	//const unsigned long long modCond = 0x20000000;//2^29
+	//only perform modulus operation during loop if result is >= sqrt((BIG_TYPE maximum + 1)/8) (in order to prevent overflowing)
+	INT_64 modCond = int64ModCond;
 
 	while (highestBitMask > 1) {
-		//if (result >= modCond) result %= mod;
+		if (result >= modCond) result %= mod;//quickMod(result, mod, &result);
 		modMultiplyLeftToRight(result, result, mod, &result);//result *= result;
 		highestBitMask >>= 1;
-		if (exp&highestBitMask)	modMultiplyLeftToRight(result, base, mod, &result);//result *= base;
+		if (exp&highestBitMask)	result <<= baseExpOf2;//modMultiplyLeftToRight(result, base, mod, &result);//result *= base;
 	}
 
 	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
-	//result %= mod;
+	//result %= mod;//quickMod(result, mod, &result);
 	*output = result;
 }
 
 //find ( 16^n % mod ) / mod and add to partialSum
-__device__ void fractionalPartOfSum(long long exp, long long mod, double *partialSum, long long highestBitMask) {
-	long long expModResult = 0;
-	modExpLeftToRight(baseSystem, exp, mod, highestBitMask, &expModResult);
+__device__ void fractionalPartOfSum(TYPE exp, TYPE mod, double *partialSum, TYPE highestBitMask) {
+	TYPE expModResult = 0;
+	modExpLeftToRight(exp, mod, highestBitMask, &expModResult);
 	*partialSum += ((double)expModResult) / ((double)mod);
 }
 
 //stride over all parts of summation in bbp formula where k <= n
 //to compute partial sJ sums
-__device__ void bbp(long long n, long long start, long long stride, sJ *output) {
+__device__ void bbp(TYPE n, TYPE start, TYPE stride, sJ *output) {
 
 	double s1 = 0.0, s4 = 0.0, s5 = 0.0, s6 = 0.0;
 	double trash = 0.0;
-	long long highestExpBit = 1;
+	TYPE highestExpBit = 1;
 	while (highestExpBit <= n)	highestExpBit <<= 1;
-	for (long long k = start; k <= n; k += stride) {
+	for (TYPE k = start; k <= n; k += stride) {
 		while (highestExpBit > (n - k))  highestExpBit >>= 1;
-		long long mod = 8 * k + 1;
+		TYPE mod = 8 * k + 1;
 		fractionalPartOfSum(n - k, mod, &s1, highestExpBit);
 		mod += 3;
 		fractionalPartOfSum(n - k, mod, &s4, highestExpBit);
@@ -167,10 +201,10 @@ __device__ void bbp(long long n, long long start, long long stride, sJ *output) 
 
 //determine from thread and block position where to begin stride
 //and how wide stride is
-__global__ void bbpKernel(sJ *c, long digit)
+__global__ void bbpKernel(sJ *c, TYPE digit)
 {
-	long long stride = blockDim.x * gridDim.x;
-	long long i = threadIdx.x + blockDim.x * blockIdx.x;
+	TYPE stride = blockDim.x * gridDim.x;
+	TYPE i = threadIdx.x + blockDim.x * blockIdx.x;
 	bbp(digit, i, stride, c);
 }
 
@@ -222,7 +256,7 @@ cudaError_t reduceSJ(sJ *c, unsigned int size) {
 //compute four steps of sJ sums for i > n and add to sJ sums found previously
 //combine sJs according to bbp formula
 //multiply by 16^5 to extract five digits of pi starting at n
-long finalizeDigit(sJ input, long long n) {
+long finalizeDigit(sJ input, TYPE n) {
 	double reducer = 1.0;
 	double s1 = input.s1;
 	double s4 = input.s4;
@@ -255,8 +289,8 @@ long finalizeDigit(sJ input, long long n) {
 
 int main()
 {
-	const int arraySize = 128 * 128;
-	const long long digitPosition = 999999999;
+	const int arraySize = threadCountPerBlock * blockCount;
+	const TYPE digitPosition = 99999999999;
 	sJ c[arraySize];
 
 	clock_t start = clock();
@@ -271,7 +305,7 @@ int main()
 
 	clock_t end = clock();
 
-	printf("pi at hexadecimal digit %d is %X\n",
+	printf("pi at hexadecimal digit %llu is %X\n",
 		digitPosition + 1, hexDigit);
 
 	printf("Computed in %.8f seconds\n", (double)(end - start) / CLOCKS_PER_SEC);
@@ -288,7 +322,7 @@ int main()
 }
 
 // Helper function for using CUDA
-cudaError_t addWithCuda(sJ *c, unsigned int size, long long digit)
+cudaError_t addWithCuda(sJ *c, unsigned int size, TYPE digit)
 {
 	sJ *dev_c = 0;
 	cudaError_t cudaStatus;
@@ -308,7 +342,7 @@ cudaError_t addWithCuda(sJ *c, unsigned int size, long long digit)
 	}
 
 	// Launch a kernel on the GPU with one thread for each element.
-	bbpKernel << <128, 128 >> >(dev_c, digit);
+	bbpKernel << <blockCount, threadCountPerBlock >> >(dev_c, digit);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
