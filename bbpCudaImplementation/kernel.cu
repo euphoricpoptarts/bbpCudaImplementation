@@ -25,6 +25,7 @@ typedef struct {
 	sJ output;
 	INT_64 digit;
 	int gpu = 0;
+	int totalGpus = 0;
 	int size = 0;
 	cudaError_t error;
 } BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
@@ -249,10 +250,9 @@ __device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ 
 }
 
 //determine from thread and block position where to begin stride
-//and how wide stride is
-__global__ void bbpKernel(sJ *c, volatile INT_64 *progress, TYPE digit, int gpuNum, INT_64 begin, INT_64 end)
+//only one of the threads per kernel (AND ONLY ON GPU0) will report progress
+__global__ void bbpKernel(sJ *c, volatile INT_64 *progress, TYPE digit, int gpuNum, INT_64 begin, INT_64 end, INT_64 stride)
 {
-	TYPE stride = blockDim.x * gridDim.x * 2;
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
 	TYPE start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
@@ -342,61 +342,52 @@ int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		const TYPE digitPosition = 99999999999;
+		const TYPE digitPosition = 999999999;
+		const int totalGpus = 2;
+		HANDLE handles[totalGpus];
+		BBPLAUNCHERDATA gpuData[totalGpus];
 
 		clock_t start = clock();
 
-		BBPLAUNCHERDATA gpu0Data;
-		gpu0Data.digit = digitPosition;
-		gpu0Data.gpu = 0;
-		gpu0Data.size = arraySize;
+		for (int i = 0; i < totalGpus; i++) {
 
-		BBPLAUNCHERDATA gpu1Data;
-		gpu1Data.digit = digitPosition;
-		gpu1Data.gpu = 1;
-		gpu1Data.size = arraySize;
+			gpuData[i].digit = digitPosition;
+			gpuData[i].gpu = i;
+			gpuData[i].totalGpus = totalGpus;
+			gpuData[i].size = arraySize;
 
-		HANDLE gpu0Thread = CreateThread(NULL, 0, *cudaBbpLauncher, (LPVOID)&gpu0Data, 0, NULL);
 
-		if (gpu0Thread == NULL) {
-			fprintf(stderr, "gpu0Thread failed to launch\n");
-			return 1;
+			handles[i] = CreateThread(NULL, 0, *cudaBbpLauncher, (LPVOID)&(gpuData[i]), 0, NULL);
+
+			if (handles[i] == NULL) {
+				fprintf(stderr, "gpu%dThread failed to launch\n", i);
+				return 1;
+			}
 		}
 
-		HANDLE gpu1Thread = CreateThread(NULL, 0, *cudaBbpLauncher, (LPVOID)&gpu1Data, 0, NULL);
+		sJ cudaResult;
 
-		if (gpu1Thread == NULL) {
-			fprintf(stderr, "gpu1Thread failed to launch\n");
-			return 1;
+		cudaError_t cudaStatus;
+
+		for (int i = 0; i < totalGpus; i++) {
+
+			WaitForSingleObject(handles[i], INFINITE);
+			CloseHandle(handles[i]);
+
+			cudaError_t cudaStatus = gpuData[i].error;
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaBbpLaunch failed on gpu%d!\n", i);
+				return 1;
+			}
+
+			sJ output = gpuData[i].output;
+
+			//sum results from gpus
+			cudaResult.s1 += output.s1;
+			cudaResult.s4 += output.s4;
+			cudaResult.s5 += output.s5;
+			cudaResult.s6 += output.s6;
 		}
-
-		WaitForSingleObject(gpu0Thread, INFINITE);
-		CloseHandle(gpu0Thread);
-		WaitForSingleObject(gpu1Thread, INFINITE);
-		CloseHandle(gpu1Thread);
-
-		cudaError_t cudaStatus = gpu0Data.error;
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaBbpLaunch failed on gpu0!\n");
-			return 1;
-		}
-
-		cudaStatus = gpu1Data.error;
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaBbpLaunch failed on gpu0!\n");
-			return 1;
-		}
-
-		sJ c, d, cudaResult;
-
-		c = gpu0Data.output;
-		d = gpu1Data.output;
-
-		//sum results from both gpus
-		cudaResult.s1 = c.s1 + d.s1;
-		cudaResult.s4 = c.s4 + d.s4;
-		cudaResult.s5 = c.s5 + d.s5;
-		cudaResult.s6 = c.s6 + d.s6;
 
 		long hexDigit = finalizeDigit(cudaResult, digitPosition);
 
@@ -449,6 +440,7 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 	PBBPLAUNCHERDATA data = (PBBPLAUNCHERDATA)dataV;
 	int size = (*data).size;
 	int gpu = (*data).gpu;
+	int totalGpus = (*data).totalGpus;
 	INT_64 digit = (*data).digit;
 	sJ *dev_c = 0;
 	sJ* c = new sJ[size];
@@ -509,7 +501,9 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 		goto Error;
 	}
 
-	INT_64 launchWidth = 2LLU * (INT_64) size * 128LLU;
+	INT_64 stride =  (INT_64) size * (INT_64) totalGpus;
+
+	INT_64 launchWidth = stride * 128LLU;
 
 	//need to round up
 	//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
@@ -523,7 +517,7 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 		if (end > digit) end = digit;
 
 		// Launch a kernel on the GPU with one thread for each element.
-		bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, currProgDevice, digit, gpu, begin, end);
+		bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, currProgDevice, digit, gpu, begin, end, stride);
 
 		// Check for any errors launching the kernel
 		cudaStatus = cudaGetLastError();
@@ -539,6 +533,9 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu 1!\n", cudaStatus);
 			goto Error;
 		}
+
+		//give the rest of the computer some gpu time to reduce system choppiness
+		Sleep(1);
 	}
 
 	if (gpu == 0) {
