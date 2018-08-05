@@ -12,16 +12,24 @@
 #define INT_64 unsigned long long
 
 struct sJ {
-	double s1, s4, s5, s6;
+	double s1 = 0.0, s4 = 0.0, s5 = 0.0, s6 = 0.0;
 };
 
-typedef struct progressData {
+typedef struct {
 	volatile INT_64 *currentProgress;
 	TYPE maxProgress;
 	int quit = 0;
 } PROGRESSDATA, *PPROGRESSDATA;
 
-cudaError_t addWithCuda(sJ *c, unsigned int size, TYPE digit);
+typedef struct {
+	sJ output;
+	INT_64 digit;
+	int gpu = 0;
+	int size = 0;
+	cudaError_t error;
+} BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
+
+DWORD WINAPI cudaBbpLauncher(LPVOID dataV);
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
 const int threadCountPerBlock = 64;
@@ -208,13 +216,13 @@ __device__ void fractionalPartOfSum(TYPE exp, TYPE mod, double *partialSum, TYPE
 
 //stride over all parts of summation in bbp formula where k <= n
 //to compute partial sJ sums
-__device__ void bbp(TYPE n, TYPE start, TYPE stride, sJ *output, volatile INT_64 *progress) {
+__device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ *output, volatile INT_64 *progress, int progressCheck) {
 
-	double s1 = 0.0, s4 = 0.0, s5 = 0.0, s6 = 0.0;
+	double s1 = output[gridId].s1, s4 = output[gridId].s4, s5 = output[gridId].s5, s6 = output[gridId].s6;
 	double trash = 0.0;
 	TYPE highestExpBit = 1;
 	while (highestExpBit <= n)	highestExpBit <<= 1;
-	for (TYPE k = start; k <= n; k += stride) {
+	for (TYPE k = start; k <= end; k += stride) {
 		while (highestExpBit > (n - k))  highestExpBit >>= 1;
 		TYPE mod = 8 * k + 1;
 		fractionalPartOfSum(n - k, mod, &s1, highestExpBit);
@@ -229,24 +237,26 @@ __device__ void bbp(TYPE n, TYPE start, TYPE stride, sJ *output, volatile INT_64
 		s4 = modf(s4, &trash);
 		s5 = modf(s5, &trash);
 		s6 = modf(s6, &trash);
-		if (start == 0) {
+		if (!progressCheck) {
 			//only 1 thread ever updates the progress
 			*progress = k;
 		}
 	}
-	output[start].s1 = s1;
-	output[start].s4 = s4;
-	output[start].s5 = s5;
-	output[start].s6 = s6;
+	output[gridId].s1 = s1;
+	output[gridId].s4 = s4;
+	output[gridId].s5 = s5;
+	output[gridId].s6 = s6;
 }
 
 //determine from thread and block position where to begin stride
 //and how wide stride is
-__global__ void bbpKernel(sJ *c, volatile INT_64 *progress, TYPE digit)
+__global__ void bbpKernel(sJ *c, volatile INT_64 *progress, TYPE digit, int gpuNum, INT_64 begin, INT_64 end)
 {
-	TYPE stride = blockDim.x * gridDim.x;
-	TYPE i = threadIdx.x + blockDim.x * blockIdx.x;
-	bbp(digit, i, stride, c, progress);
+	TYPE stride = blockDim.x * gridDim.x * 2;
+	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
+	TYPE start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
+	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
+	bbp(digit, start, end, gridId, stride, c, progress, progressCheck);
 }
 
 //stride over current leaves of reduce tree
@@ -332,18 +342,63 @@ int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		const TYPE digitPosition = 9999999999;
-		sJ* c = new sJ[arraySize];
+		const TYPE digitPosition = 99999999999;
 
 		clock_t start = clock();
 
-		cudaError_t cudaStatus = addWithCuda(c, arraySize, digitPosition);
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "addWithCuda failed!");
+		BBPLAUNCHERDATA gpu0Data;
+		gpu0Data.digit = digitPosition;
+		gpu0Data.gpu = 0;
+		gpu0Data.size = arraySize;
+
+		BBPLAUNCHERDATA gpu1Data;
+		gpu1Data.digit = digitPosition;
+		gpu1Data.gpu = 1;
+		gpu1Data.size = arraySize;
+
+		HANDLE gpu0Thread = CreateThread(NULL, 0, *cudaBbpLauncher, (LPVOID)&gpu0Data, 0, NULL);
+
+		if (gpu0Thread == NULL) {
+			fprintf(stderr, "gpu0Thread failed to launch\n");
 			return 1;
 		}
 
-		long hexDigit = finalizeDigit(c[0], digitPosition);
+		HANDLE gpu1Thread = CreateThread(NULL, 0, *cudaBbpLauncher, (LPVOID)&gpu1Data, 0, NULL);
+
+		if (gpu1Thread == NULL) {
+			fprintf(stderr, "gpu1Thread failed to launch\n");
+			return 1;
+		}
+
+		WaitForSingleObject(gpu0Thread, INFINITE);
+		CloseHandle(gpu0Thread);
+		WaitForSingleObject(gpu1Thread, INFINITE);
+		CloseHandle(gpu1Thread);
+
+		cudaError_t cudaStatus = gpu0Data.error;
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaBbpLaunch failed on gpu0!\n");
+			return 1;
+		}
+
+		cudaStatus = gpu1Data.error;
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaBbpLaunch failed on gpu0!\n");
+			return 1;
+		}
+
+		sJ c, d, cudaResult;
+
+		c = gpu0Data.output;
+		d = gpu1Data.output;
+
+		//sum results from both gpus
+		cudaResult.s1 = c.s1 + d.s1;
+		cudaResult.s4 = c.s4 + d.s4;
+		cudaResult.s5 = c.s5 + d.s5;
+		cudaResult.s6 = c.s6 + d.s6;
+
+		long hexDigit = finalizeDigit(cudaResult, digitPosition);
 
 		clock_t end = clock();
 
@@ -389,26 +444,61 @@ DWORD WINAPI progressCheck(LPVOID data) {
 }
 
 // Helper function for using CUDA
-cudaError_t addWithCuda(sJ *c, unsigned int size, TYPE digit)
+DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, unsigned int size, TYPE digit)
 {
+	PBBPLAUNCHERDATA data = (PBBPLAUNCHERDATA)dataV;
+	int size = (*data).size;
+	int gpu = (*data).gpu;
+	INT_64 digit = (*data).digit;
 	sJ *dev_c = 0;
-
-	//these variables are linked between host and device memory allowing each to communicate about progress
-	volatile INT_64 *currProgHost, *currProgDevice;
+	sJ* c = new sJ[size];
 
 	cudaError_t cudaStatus;
 
-	// Choose which GPU to run on, change this on a multi-GPU system.
-	cudaStatus = cudaSetDevice(0);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-		goto Error;
+	PROGRESSDATA threadData;
+	HANDLE thread;
+	//these variables are linked between host and device memory allowing each to communicate about progress
+	volatile INT_64 *currProgHost, *currProgDevice;
+
+	if (gpu == 0) {
+
+		//allow device to map host memory for progress ticker
+		cudaStatus = cudaSetDeviceFlags(cudaDeviceMapHost);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaSetDeviceFlags failed with error: %s\n", cudaGetErrorString(cudaStatus));
+			goto Error;
+		}
+
+		// Allocate Host memory for progress ticker
+		cudaStatus = cudaHostAlloc((void**)&currProgHost, sizeof(INT_64), cudaHostAllocMapped);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaHostAalloc failed!");
+			goto Error;
+		}
+
+		//create link between between host and device memory for progress ticker
+		cudaStatus = cudaHostGetDevicePointer((INT_64 **)&currProgDevice, (INT_64 *)currProgHost, 0);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaHostGetDevicePointer failed!");
+			goto Error;
+		}
+
+		*currProgHost = 0;
+
+		threadData = { currProgHost, digit, 0 };
+
+		thread = CreateThread(NULL, 0, *progressCheck, (LPVOID)&threadData, 0, NULL);
+
+		if (thread == NULL) {
+			fprintf(stderr, "progressCheck thread creation failed\n");
+			goto Error;
+		}
 	}
 
-	//allow device to map host memory for progress ticker
-	cudaSetDeviceFlags(cudaDeviceMapHost);
+	// Choose which GPU to run on, change this on a multi-GPU system.
+	cudaStatus = cudaSetDevice(gpu);
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaSetDeviceFlags failed!");
+		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
 		goto Error;
 	}
 
@@ -419,54 +509,46 @@ cudaError_t addWithCuda(sJ *c, unsigned int size, TYPE digit)
 		goto Error;
 	}
 
-	// Allocate Host memory for progress ticker
-	cudaStatus = cudaHostAlloc((void**)&currProgHost, sizeof(INT_64), cudaHostAllocMapped);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaHostAalloc failed!");
-		goto Error;
+	INT_64 launchWidth = 2LLU * (INT_64) size * 128LLU;
+
+	//need to round up
+	//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
+	//even when digit/launchWidth is an integer, it is necessary to add 1
+	INT_64 neededLaunches = (digit / launchWidth) + 1LLU;
+
+	for (INT_64 launch = 0; launch < neededLaunches; launch++) {
+
+		INT_64 begin = launchWidth * launch;
+		INT_64 end = launchWidth * (launch + 1) - 1;
+		if (end > digit) end = digit;
+
+		// Launch a kernel on the GPU with one thread for each element.
+		bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, currProgDevice, digit, gpu, begin, end);
+
+		// Check for any errors launching the kernel
+		cudaStatus = cudaGetLastError();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "bbpKernel launch failed on gpu%d: %s\n", gpu, cudaGetErrorString(cudaStatus));
+			goto Error;
+		}
+
+		// cudaDeviceSynchronize waits for the kernel to finish, and returns
+		// any errors encountered during the launch.
+		cudaStatus = cudaDeviceSynchronize();
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu 1!\n", cudaStatus);
+			goto Error;
+		}
 	}
 
-	//create link between between host and device memory for progress ticker
-	cudaStatus = cudaHostGetDevicePointer((INT_64 **)&currProgDevice, (INT_64 *)currProgHost, 0);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaHostGetDevicePointer failed!");
-		goto Error;
+	if (gpu == 0) {
+
+		//tell the progress thread to quit
+		threadData.quit = 1;
+
+		WaitForSingleObject(thread, INFINITE);
+		CloseHandle(thread);
 	}
-
-	*currProgHost = 0;
-
-	PROGRESSDATA threadData = { currProgHost, digit, 0 };
-
-	HANDLE thread = CreateThread(NULL, 0, *progressCheck, (LPVOID) &threadData, 0, NULL);
-
-	if (thread == NULL) {
-		fprintf(stderr, "progressCheck thread creation failed\n");
-		goto Error;
-	}
-
-	// Launch a kernel on the GPU with one thread for each element.
-	bbpKernel << <blockCount, threadCountPerBlock >> >(dev_c, currProgDevice, digit);
-
-	// Check for any errors launching the kernel
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "bbpKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
-	}
-
-	// cudaDeviceSynchronize waits for the kernel to finish, and returns
-	// any errors encountered during the launch.
-	cudaStatus = cudaDeviceSynchronize();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel!\n", cudaStatus);
-		goto Error;
-	}
-
-	//tell the progress thread to quit
-	threadData.quit = 1;
-
-	WaitForSingleObject(thread, INFINITE);
-	CloseHandle(thread);
 
 	cudaStatus = reduceSJ(dev_c, size);
 
@@ -474,15 +556,19 @@ cudaError_t addWithCuda(sJ *c, unsigned int size, TYPE digit)
 		goto Error;
 	}
 
-	// Copy result vector from GPU buffer to host memory.
+	// Copy result vector from GPU 0 buffer to host memory.
 	cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(sJ), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
 	}
 
+	(*data).output = c[0];
+
 Error:
+	free(c);
 	cudaFree(dev_c);
 
-	return cudaStatus;
+	(*data).error = cudaStatus;
+	return 0;
 }
