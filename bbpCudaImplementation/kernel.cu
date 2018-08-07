@@ -7,6 +7,7 @@
 #include <math.h>
 #include <time.h>
 #include <Windows.h>
+#include <deque>
 
 #define TYPE unsigned long long
 #define INT_64 unsigned long long
@@ -41,8 +42,8 @@ __device__ const TYPE baseSystem = 16;
 __device__ const int baseExpOf2 = 4;
 
 __device__ const int typeSize = sizeof(TYPE) * 8 - 1;
-__device__ const TYPE multiplyModCond = 0x2000000000000000;//2^61
-__device__ const int int64Size = sizeof(INT_64) * 8 - 1;
+__device__ const TYPE multiplyModCond = 0x4000000000000000;//2^62
+//__device__ const int int64Size = sizeof(INT_64) * 8 - 1;
 __device__ const INT_64 int64ModCond = 0x40000000;
 __device__ const INT_64 int64MaxBit = 0x8000000000000000;
 
@@ -57,20 +58,20 @@ __device__ void quickMod(INT_64 input, const INT_64 mod, INT_64 *output) {
 	while (temp < input && !(temp&int64MaxBit)) temp <<= 1;
 	if (temp > input) temp >>= 1;
 	while (input >= mod && temp >= mod) {
-		if(input >= temp) input -= temp;
+		if (input >= temp) input -= temp;
 		temp >>= 1;
 	}
 	/*if (input != test && !atomicAdd(&printOnce,1))
 	{
-		printf("input %llu mod %llu error\n", copy, mod);
-		printOnce = 1;
+	printf("input %llu mod %llu error\n", copy, mod);
+	printOnce = 1;
 	}*/
 	*output = input;
 }
 
 //binary search to find highest 1 bit in multiplier
 __device__ void findMultiplierHighestBit(const TYPE multiplier, TYPE *output) {
-	
+
 	//if no bits are 1 then highest bit doesn't exist
 	if (!multiplier) {
 		*output = 0;
@@ -102,8 +103,8 @@ __device__ void findMultiplierHighestBit(const TYPE multiplier, TYPE *output) {
 	while (highestBit2 > multiplier) highestBit2 >>= 1;
 
 	if (highestBit != highestBit2 && !printOnce) {
-		printf("multiplier %d error; highestBit %d; highestBit2 %d\n", multiplier, highestBit, highestBit2);
-		printOnce = 1;
+	printf("multiplier %d error; highestBit %d; highestBit2 %d\n", multiplier, highestBit, highestBit2);
+	printOnce = 1;
 	}*/
 
 	*output = highestBit;
@@ -113,7 +114,7 @@ __device__ void findMultiplierHighestBit(const TYPE multiplier, TYPE *output) {
 //http://graphics.stanford.edu/~seander/bithacks.html
 //just barely faster than built-in CUDA __clzll
 __device__ void findMultiplierHighestBitHackersDelight(TYPE multiplier, TYPE *output) {
-	
+
 	multiplier |= multiplier >> 1;
 	multiplier |= multiplier >> 2;
 	multiplier |= multiplier >> 4;
@@ -128,22 +129,12 @@ __device__ void findMultiplierHighestBitHackersDelight(TYPE multiplier, TYPE *ou
 __device__ void modMultiplyLeftToRight(const TYPE multiplicand, const TYPE multiplier, TYPE mod, TYPE *output) {
 	TYPE result = multiplicand;
 
-	//TYPE highestBitMask = 0;
-
-	//findMultiplierHighestBit(multiplier, &highestBitMask);
-
-	/*unsigned long zeroCount = 0;
-
-	zeroCount = __clzll(multiplier);*/
-
 	TYPE highestBitMask = 0;
 
-	//highestBitMask <<= (63 - zeroCount);
-	
 	findMultiplierHighestBitHackersDelight(multiplier, &highestBitMask);
 
 	while (highestBitMask > 1) {
-		//only perform modulus operation during loop if result is >= (TYPE maximum + 1)/8 (in order to prevent overflowing)
+		//only perform modulus operation during loop if result is >= (TYPE maximum + 1)/4 (in order to prevent overflowing)
 		if (result >= multiplyModCond) result %= mod;
 		result <<= 1;
 		highestBitMask >>= 1;
@@ -153,6 +144,50 @@ __device__ void modMultiplyLeftToRight(const TYPE multiplicand, const TYPE multi
 	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
 	result %= mod;
 	*output = result;
+}
+
+__device__ void modMultiplyRightToLeft(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, INT_64 *output) {
+	INT_64 result = 0;
+
+	INT_64 mask = 1;
+
+	while (multiplier > 0) {
+		if (multiplier&mask) {
+			result += multiplicand;
+
+			//only perform modulus operation during loop if result is >= (INT_64 maximum + 1)/2 (in order to prevent overflowing)
+			if (result >= int64MaxBit) result %= mod;
+		}
+		multiplicand <<= 1;
+		if (multiplicand >= int64MaxBit) multiplicand %= mod;
+		multiplier >>= 1;
+	}
+
+	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
+	result %= mod;
+	*output = result;
+}
+
+//leverages a machine instruction that returns the highest 64 bits of the multiplication operation
+//multiplicand and multiplier should always be less than mod (may work correctly even if this is not the case)
+//maxMod is constant with respect to each mod, therefore best place to calculate is in modExp functions
+__device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, INT_64 maxMod, INT_64 *output) {
+	INT_64	hi = __umul64hi(multiplicand, multiplier);
+	INT_64 result = (multiplicand * multiplier) % mod;
+	while (hi) {
+		INT_64 lo = hi * maxMod;
+
+		//multiplyModCond should be (2^64)/(number of loop iterations)
+		//where loop iterations are roughly 64/(64 - log2(mod))
+		//THEREFORE THIS SHOULD NOT BE A COMPILE TIME CONSTANT
+		//but a runtime variable set at launch based upon the maximum mod that will be passed to this function
+		//for 2^40 number of loops is 2, for 2^50 number of loops is 4
+		if (lo > multiplyModCond) lo %= mod;
+
+		result +=  lo;
+		hi = __umul64hi(hi, maxMod);
+	}
+	*output = result % mod;
 }
 
 //perform right-to-left binary exponention taking modulus of both base and result at each step
@@ -190,7 +225,13 @@ __device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask,
 	INT_64 result = baseSystem;
 
 	//only perform modulus operation during loop if result is >= sqrt((BIG_TYPE maximum + 1)/8) (in order to prevent overflowing)
-	INT_64 modCond = int64ModCond;
+	//INT_64 modCond = int64ModCond;
+
+	INT_64 maxMod = int64MaxBit % mod;
+
+	maxMod <<= 1;
+
+	if (maxMod > mod) maxMod %= mod;
 
 	while (highestBitMask > 1) {
 		//this is not necessary as modMultiplyLeftToRight ensures result never overflows a 64 bit buffer
@@ -198,7 +239,7 @@ __device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask,
 		//likely saves performing some moduli in modMultiplyLeftToRight or reduces overall size of arguments
 		if (result >= mod) result %= mod;//quickMod(result, mod, &result);
 
-		modMultiplyLeftToRight(result, result, mod, &result);//result *= result;
+		modMultiply64Bit(result, result, mod, maxMod, &result);//result *= result;
 		highestBitMask >>= 1;
 		if (exp&highestBitMask)	result <<= baseExpOf2;//modMultiplyLeftToRight(result, base, mod, &result);//result *= base;
 	}
@@ -342,7 +383,7 @@ int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		const TYPE digitPosition = 999999999;
+		const TYPE digitPosition = 99999999999;
 		const int totalGpus = 2;
 		HANDLE handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];
@@ -393,7 +434,7 @@ int main()
 
 		clock_t end = clock();
 
-		printf("pi at hexadecimal digit %llu is %X\n",
+		printf("pi at hexadecimal digit %llu is %05X\n",
 			digitPosition + 1, hexDigit);
 
 		printf("Computed in %.8f seconds\n", (double)(end - start) / CLOCKS_PER_SEC);
@@ -420,14 +461,24 @@ DWORD WINAPI progressCheck(LPVOID data) {
 
 	double lastProgress = 0;
 
+	std::deque<double> progressQ;
+
 	while(!(*progP).quit) {
 		double progress = (double)(*((*progP).currentProgress)) / (double)(*progP).maxProgress;
 
-		if (progress - lastProgress > 1E-4) {
-			double timeEst = (1.0 - progress)*0.1 / (progress - lastProgress);
-			lastProgress = progress;
-			printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds.\n", 100.0*progress, timeEst);
-		}
+		progressQ.push_front(progress - lastProgress);
+
+		if (progressQ.size() > 10) progressQ.pop_back();
+
+		double progressAvg = 0.0;
+
+		for (std::deque<double>::iterator it = progressQ.begin(); it != progressQ.end(); *it++) progressAvg += *it;
+
+		progressAvg /= (double) progressQ.size();
+
+		double timeEst = 0.1*(1.0 - progress) / (progressAvg);
+		lastProgress = progress;
+		printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds.\n", 100.0*progress, timeEst);
 
 		Sleep(100);
 	}
