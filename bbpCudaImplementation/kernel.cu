@@ -190,6 +190,40 @@ __device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, INT_64 
 	*output = result % mod;
 }
 
+//leverages a machine instruction that returns the highest 64 bits of the multiplication operation
+//multiplicand and multiplier should always be less than mod (may work correctly even if this is not the case)
+//uses bitshifts to avoid multiplications inside the loop
+//slower than other version (but could be faster if mod is close to 2^63)
+__device__ void modMultiply64BitAlt(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, INT_64 *output) {
+	INT_64	hi = __umul64hi(multiplicand, multiplier);
+	INT_64 result = (multiplicand * multiplier) % mod;
+	while (hi) {
+
+		//determine the number of bits to shift so that hi >= 2^63
+		int leading = __clzll(hi);
+
+		//hi is the highest 64 bits of multiplicand*multiplier
+		//so hi is actually hi*2^64
+		//shifting by leading does not change the true value, as (hi*2^leading)*2^(64 - leading) = hi*2^64
+		hi <<= leading;
+
+		hi %= mod;
+
+		INT_64 lo = hi << (64 - leading);
+		hi >>= leading;
+
+		//multiplyModCond should be (2^64)/(number of loop iterations)
+		//where loop iterations are roughly 64/(64 - log2(mod))
+		//THEREFORE THIS SHOULD NOT BE A COMPILE TIME CONSTANT
+		//but a runtime variable set at launch based upon the maximum mod that will be passed to this function
+		//for 2^40 number of loops is 2, for 2^50 number of loops is 4
+		if (lo > multiplyModCond) lo %= mod;
+
+		result += lo;
+	}
+	*output = result % mod;
+}
+
 //perform right-to-left binary exponention taking modulus of both base and result at each step
 //64 bit integers are required to accurately find the modular exponents of numbers when mod is >= ~10e6
 //however, with CUDA 64 bit integers are implemented at compile time as two 32 bit integers
@@ -383,7 +417,7 @@ int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		const TYPE digitPosition = 99999999999;
+		const TYPE digitPosition = 9999999999;
 		const int totalGpus = 2;
 		HANDLE handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];
