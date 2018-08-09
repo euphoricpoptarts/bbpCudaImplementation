@@ -14,6 +14,7 @@
 
 struct sJ {
 	double s1 = 0.0, s4 = 0.0, s5 = 0.0, s6 = 0.0;
+	double s4k1 = 0.0, s4k3 = 0.0, s10k1 = 0.0, s10k3 = 0.0, s10k5 = 0.0, s10k7 = 0.0, s10k9 = 0.0;
 };
 
 typedef struct {
@@ -38,8 +39,8 @@ const int threadCountPerBlock = 64;
 //this is more difficult to optimize but seems to not like odd numbers
 const int blockCount = 560;
 
-__device__ const TYPE baseSystem = 16;
-__device__ const int baseExpOf2 = 4;
+__device__ const TYPE baseSystem = 1024;
+__device__ const int baseExpOf2 = 10;
 
 __device__ const int typeSize = sizeof(TYPE) * 8 - 1;
 __device__ const TYPE multiplyModCond = 0x4000000000000000;//2^62
@@ -284,44 +285,50 @@ __device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask,
 }
 
 //find ( 16^n % mod ) / mod and add to partialSum
-__device__ void fractionalPartOfSum(TYPE exp, TYPE mod, double *partialSum, TYPE highestBitMask) {
+__device__ void fractionalPartOfSum(TYPE exp, TYPE mod, double *partialSum, TYPE highestBitMask, int negative) {
 	TYPE expModResult = 0;
 	modExpLeftToRight(exp, mod, highestBitMask, &expModResult);
-	*partialSum += ((double)expModResult) / ((double)mod);
+	double sign = 1.0;
+	if (negative) sign = -1.0;
+	*partialSum += sign * ((double)expModResult) / ((double)mod);
 }
 
 //stride over all parts of summation in bbp formula where k <= n
 //to compute partial sJ sums
 __device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ *output, volatile INT_64 *progress, int progressCheck) {
 
-	double s1 = output[gridId].s1, s4 = output[gridId].s4, s5 = output[gridId].s5, s6 = output[gridId].s6;
 	double trash = 0.0;
 	TYPE highestExpBit = 1;
 	while (highestExpBit <= n)	highestExpBit <<= 1;
 	for (TYPE k = start; k <= end; k += stride) {
 		while (highestExpBit > (n - k))  highestExpBit >>= 1;
-		TYPE mod = 8 * k + 1;
-		fractionalPartOfSum(n - k, mod, &s1, highestExpBit);
-		mod += 3;
-		fractionalPartOfSum(n - k, mod, &s4, highestExpBit);
-		mod += 1;
-		fractionalPartOfSum(n - k, mod, &s5, highestExpBit);
-		mod += 1;
-		fractionalPartOfSum(n - k, mod, &s6, highestExpBit);
-		//remove any integer part of s1-s6
-		s1 = modf(s1, &trash);
-		s4 = modf(s4, &trash);
-		s5 = modf(s5, &trash);
-		s6 = modf(s6, &trash);
+		TYPE mod = 4 * k + 1;
+		fractionalPartOfSum(n - k, mod, &(output[gridId].s4k1), highestExpBit, k & 1);
+		mod += 2;
+		fractionalPartOfSum(n - k, mod, &(output[gridId].s4k3), highestExpBit, k & 1);
+		mod = 10 * k + 1;
+		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k1), highestExpBit, k & 1);
+		mod += 2;
+		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k3), highestExpBit, k & 1);
+		mod += 2;
+		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k5), highestExpBit, k & 1);
+		mod += 2;
+		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k7), highestExpBit, k & 1);
+		mod += 2;
+		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k9), highestExpBit, k & 1);
+		//remove any integer part of sJ's
+		output[gridId].s4k1 = modf(output[gridId].s4k1, &trash);
+		output[gridId].s4k3 = modf(output[gridId].s4k3, &trash);
+		output[gridId].s10k1 = modf(output[gridId].s10k1, &trash);
+		output[gridId].s10k3 = modf(output[gridId].s10k3, &trash);
+		output[gridId].s10k5 = modf(output[gridId].s10k5, &trash);
+		output[gridId].s10k7 = modf(output[gridId].s10k7, &trash);
+		output[gridId].s10k9 = modf(output[gridId].s10k9, &trash);
 		if (!progressCheck) {
 			//only 1 thread ever updates the progress
 			*progress = k;
 		}
 	}
-	output[gridId].s1 = s1;
-	output[gridId].s4 = s4;
-	output[gridId].s5 = s5;
-	output[gridId].s6 = s6;
 }
 
 //determine from thread and block position where to begin stride
@@ -344,6 +351,13 @@ __global__ void reduceSJKernel(sJ *c, int offset, int stop) {
 		c[i].s4 += c[augend].s4;
 		c[i].s5 += c[augend].s5;
 		c[i].s6 += c[augend].s6;
+		c[i].s4k1 += c[augend].s4k1;
+		c[i].s4k3 += c[augend].s4k3;
+		c[i].s10k1 += c[augend].s10k1;
+		c[i].s10k3 += c[augend].s10k3;
+		c[i].s10k5 += c[augend].s10k5;
+		c[i].s10k7 += c[augend].s10k7;
+		c[i].s10k9 += c[augend].s10k9;
 		i += stride;
 	}
 }
@@ -413,11 +427,59 @@ long finalizeDigit(sJ input, TYPE n) {
 	return (long)hexDigit;
 }
 
+long finalizeDigitAlt(sJ input, TYPE n) {
+	double reducer = 1.0;
+	double trash = 0.0;
+	double s4k1 = modf(input.s4k1, &trash);
+	double s4k3 = modf(input.s4k3, &trash);
+	double s10k1 = modf(input.s10k1, &trash);
+	double s10k3 = modf(input.s10k3, &trash);
+	double s10k5 = modf(input.s10k5, &trash);
+	double s10k7 = modf(input.s10k7, &trash);
+	double s10k9 = modf(input.s10k9, &trash);
+	if (n < 16000) {
+		for (int i = 0; i < 5; i++) {
+			n++;
+			double sign = 1.0;
+			if (n & 1) sign = -1.0;
+			reducer /= (double)baseSystem;
+			s4k1 += sign * reducer / (4.0 * n + 1.0);
+			s4k3 += sign * reducer / (4.0 * n + 3.0);
+			s10k1 += sign * reducer / (10.0 * n + 1.0);
+			s10k3 += sign * reducer / (10.0 * n + 3.0);
+			s10k5 += sign * reducer / (10.0 * n + 5.0);
+			s10k7 += sign * reducer / (10.0 * n + 7.0);
+			s10k9 += sign * reducer / (10.0 * n + 9.0);
+		}
+	}
+	s4k1 = modf(input.s4k1, &trash);
+	s4k3 = modf(input.s4k3, &trash);
+	s10k1 = modf(input.s10k1, &trash);
+	s10k3 = modf(input.s10k3, &trash);
+	s10k5 = modf(input.s10k5, &trash);
+	s10k7 = modf(input.s10k7, &trash);
+	s10k9 = modf(input.s10k9, &trash);
+	double hexDigit = -32.0*s4k1 - s4k3 + 256.0*s10k1 - 64.0*s10k3 - 4.0*s10k5 - 4.0*s10k7 + s10k9;
+	hexDigit /= 64.0;
+	if ((2 * n) % 5) {
+		int loopLimit = (2 * n) % 5;
+		for (int i = 0; i < loopLimit; i++) {
+			hexDigit *= 4.0;
+		}
+	}
+	hexDigit = modf(hexDigit, &trash);
+	if (hexDigit < 0) hexDigit++;
+	//shift left by 5 hex digits
+	hexDigit *= 16.0*16.0*16.0*16.0*16.0;
+	printf("hexDigit = %.8f\n", hexDigit);
+	return (long)hexDigit;
+}
+
 int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		const TYPE digitPosition = 9999999999;
+		const TYPE digitPosition = 0;
 		const int totalGpus = 2;
 		HANDLE handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];
@@ -426,7 +488,7 @@ int main()
 
 		for (int i = 0; i < totalGpus; i++) {
 
-			gpuData[i].digit = digitPosition;
+			gpuData[i].digit = (2LLU * digitPosition) / 5LLU;
 			gpuData[i].gpu = i;
 			gpuData[i].totalGpus = totalGpus;
 			gpuData[i].size = arraySize;
@@ -462,9 +524,16 @@ int main()
 			cudaResult.s4 += output.s4;
 			cudaResult.s5 += output.s5;
 			cudaResult.s6 += output.s6;
+			cudaResult.s4k1 += output.s4k1;
+			cudaResult.s4k3 += output.s4k3;
+			cudaResult.s10k1 += output.s10k1;
+			cudaResult.s10k3 += output.s10k3;
+			cudaResult.s10k5 += output.s10k5;
+			cudaResult.s10k7 += output.s10k7;
+			cudaResult.s10k9 += output.s10k9;
 		}
 
-		long hexDigit = finalizeDigit(cudaResult, digitPosition);
+		long hexDigit = finalizeDigitAlt(cudaResult, digitPosition);
 
 		clock_t end = clock();
 
