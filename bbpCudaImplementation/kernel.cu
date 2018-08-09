@@ -262,6 +262,11 @@ __device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask,
 	//only perform modulus operation during loop if result is >= sqrt((BIG_TYPE maximum + 1)/8) (in order to prevent overflowing)
 	//INT_64 modCond = int64ModCond;
 
+	if (!exp) {
+		*output = 1;
+		return;
+	}
+
 	INT_64 maxMod = int64MaxBit % mod;
 
 	maxMod <<= 1;
@@ -304,17 +309,17 @@ __device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ 
 		while (highestExpBit > (n - k))  highestExpBit >>= 1;
 		TYPE mod = 4 * k + 1;
 		fractionalPartOfSum(n - k, mod, &(output[gridId].s4k1), highestExpBit, k & 1);
-		mod += 2;
+		mod += 2;//4k + 3
 		fractionalPartOfSum(n - k, mod, &(output[gridId].s4k3), highestExpBit, k & 1);
 		mod = 10 * k + 1;
 		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k1), highestExpBit, k & 1);
-		mod += 2;
+		mod += 2;//10k + 3
 		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k3), highestExpBit, k & 1);
-		mod += 2;
+		mod += 2;//10k + 5
 		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k5), highestExpBit, k & 1);
-		mod += 2;
+		mod += 2;//10k + 7
 		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k7), highestExpBit, k & 1);
-		mod += 2;
+		mod += 2;//10k + 9
 		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k9), highestExpBit, k & 1);
 		//remove any integer part of sJ's
 		output[gridId].s4k1 = modf(output[gridId].s4k1, &trash);
