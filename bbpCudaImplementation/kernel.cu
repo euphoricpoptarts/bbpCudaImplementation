@@ -263,7 +263,7 @@ __device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask,
 	//INT_64 modCond = int64ModCond;
 
 	if (!exp) {
-		*output = 1;
+		//no need to set output to anythign as it is already 1
 		return;
 	}
 
@@ -289,13 +289,13 @@ __device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask,
 	*output = result;
 }
 
-//find ( 16^n % mod ) / mod and add to partialSum
+//find ( baseSystem^n % mod ) / mod and add to partialSum
 __device__ void fractionalPartOfSum(TYPE exp, TYPE mod, double *partialSum, TYPE highestBitMask, int negative) {
-	TYPE expModResult = 0;
+	TYPE expModResult = 1;
 	modExpLeftToRight(exp, mod, highestBitMask, &expModResult);
 	double sign = 1.0;
 	if (negative) sign = -1.0;
-	*partialSum += sign * ((double)expModResult) / ((double)mod);
+	*partialSum += sign * (((double)expModResult) / ((double)mod));
 }
 
 //stride over all parts of summation in bbp formula where k <= n
@@ -435,43 +435,41 @@ long finalizeDigit(sJ input, TYPE n) {
 long finalizeDigitAlt(sJ input, TYPE n) {
 	double reducer = 1.0;
 	double trash = 0.0;
-	double s4k1 = modf(input.s4k1, &trash);
-	double s4k3 = modf(input.s4k3, &trash);
-	double s10k1 = modf(input.s10k1, &trash);
-	double s10k3 = modf(input.s10k3, &trash);
-	double s10k5 = modf(input.s10k5, &trash);
-	double s10k7 = modf(input.s10k7, &trash);
-	double s10k9 = modf(input.s10k9, &trash);
+	double s4k1 = input.s4k1;//modf(input.s4k1, &trash);
+	double s4k3 = input.s4k3;//modf(input.s4k3, &trash);
+	double s10k1 = input.s10k1;//modf(input.s10k1, &trash);
+	double s10k3 = input.s10k3;//modf(input.s10k3, &trash);
+	double s10k5 = input.s10k5;//modf(input.s10k5, &trash);
+	double s10k7 = input.s10k7;//modf(input.s10k7, &trash);
+	double s10k9 = input.s10k9;//modf(input.s10k9, &trash);
+	int loopLimit = (2 * n) % 5;
+	n = (2 * n) / 5;
 	if (n < 16000) {
 		for (int i = 0; i < 5; i++) {
 			n++;
 			double sign = 1.0;
+			double nD = (double)n;
 			if (n & 1) sign = -1.0;
 			reducer /= (double)baseSystem;
-			s4k1 += sign * reducer / (4.0 * n + 1.0);
-			s4k3 += sign * reducer / (4.0 * n + 3.0);
-			s10k1 += sign * reducer / (10.0 * n + 1.0);
-			s10k3 += sign * reducer / (10.0 * n + 3.0);
-			s10k5 += sign * reducer / (10.0 * n + 5.0);
-			s10k7 += sign * reducer / (10.0 * n + 7.0);
-			s10k9 += sign * reducer / (10.0 * n + 9.0);
+			s4k1 += sign * reducer / (4.0 * nD + 1.0);
+			s4k3 += sign * reducer / (4.0 * nD + 3.0);
+			s10k1 += sign * reducer / (10.0 * nD + 1.0);
+			s10k3 += sign * reducer / (10.0 * nD + 3.0);
+			s10k5 += sign * reducer / (10.0 * nD + 5.0);
+			s10k7 += sign * reducer / (10.0 * nD + 7.0);
+			s10k9 += sign * reducer / (10.0 * nD + 9.0);
 		}
 	}
-	s4k1 = modf(input.s4k1, &trash);
-	s4k3 = modf(input.s4k3, &trash);
-	s10k1 = modf(input.s10k1, &trash);
-	s10k3 = modf(input.s10k3, &trash);
-	s10k5 = modf(input.s10k5, &trash);
-	s10k7 = modf(input.s10k7, &trash);
-	s10k9 = modf(input.s10k9, &trash);
+	s4k1 = modf(s4k1, &trash);
+	s4k3 = modf(s4k3, &trash);
+	s10k1 = modf(s10k1, &trash);
+	s10k3 = modf(s10k3, &trash);
+	s10k5 = modf(s10k5, &trash);
+	s10k7 = modf(s10k7, &trash);
+	s10k9 = modf(s10k9, &trash);
 	double hexDigit = -32.0*s4k1 - s4k3 + 256.0*s10k1 - 64.0*s10k3 - 4.0*s10k5 - 4.0*s10k7 + s10k9;
 	hexDigit /= 64.0;
-	if ((2 * n) % 5) {
-		int loopLimit = (2 * n) % 5;
-		for (int i = 0; i < loopLimit; i++) {
-			hexDigit *= 4.0;
-		}
-	}
+	for (int i = 0; i < loopLimit; i++) hexDigit *= 4.0;	
 	hexDigit = modf(hexDigit, &trash);
 	if (hexDigit < 0) hexDigit++;
 	//shift left by 5 hex digits
@@ -484,7 +482,7 @@ int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		const TYPE digitPosition = 0;
+		const TYPE digitPosition = 9999999999;
 		const int totalGpus = 2;
 		HANDLE handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];
