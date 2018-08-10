@@ -263,7 +263,7 @@ __device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask,
 	//INT_64 modCond = int64ModCond;
 
 	if (!exp) {
-		//no need to set output to anythign as it is already 1
+		//no need to set output to anything as it is already 1
 		return;
 	}
 
@@ -293,9 +293,13 @@ __device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask,
 __device__ void fractionalPartOfSum(TYPE exp, TYPE mod, double *partialSum, TYPE highestBitMask, int negative) {
 	TYPE expModResult = 1;
 	modExpLeftToRight(exp, mod, highestBitMask, &expModResult);
-	double sign = 1.0;
-	if (negative) sign = -1.0;
-	*partialSum += sign * (((double)expModResult) / ((double)mod));
+	double sumTerm = (((double)expModResult) / ((double)mod));
+	
+	//if n is odd, then sumTerm will be negative
+	//add 1 to it to find its positive fractional part
+	if (negative) sumTerm = 1.0 - sumTerm;
+	*partialSum += sumTerm;
+	if((*partialSum) > 1.0) *partialSum -= (int)(*partialSum);
 }
 
 //stride over all parts of summation in bbp formula where k <= n
@@ -321,14 +325,6 @@ __device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ 
 		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k7), highestExpBit, k & 1);
 		mod += 2;//10k + 9
 		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k9), highestExpBit, k & 1);
-		//remove any integer part of sJ's
-		output[gridId].s4k1 = modf(output[gridId].s4k1, &trash);
-		output[gridId].s4k3 = modf(output[gridId].s4k3, &trash);
-		output[gridId].s10k1 = modf(output[gridId].s10k1, &trash);
-		output[gridId].s10k3 = modf(output[gridId].s10k3, &trash);
-		output[gridId].s10k5 = modf(output[gridId].s10k5, &trash);
-		output[gridId].s10k7 = modf(output[gridId].s10k7, &trash);
-		output[gridId].s10k9 = modf(output[gridId].s10k9, &trash);
 		if (!progressCheck) {
 			//only 1 thread ever updates the progress
 			*progress = k;
@@ -363,6 +359,13 @@ __global__ void reduceSJKernel(sJ *c, int offset, int stop) {
 		c[i].s10k5 += c[augend].s10k5;
 		c[i].s10k7 += c[augend].s10k7;
 		c[i].s10k9 += c[augend].s10k9;
+		if (c[i].s4k1 > 1) c[i].s4k1 -= (int)c[i].s4k1;
+		if (c[i].s4k3 > 1) c[i].s4k3 -= (int)c[i].s4k3;
+		if (c[i].s10k1 > 1) c[i].s10k1 -= (int)c[i].s10k1;
+		if (c[i].s10k3 > 1) c[i].s10k3 -= (int)c[i].s10k3;
+		if (c[i].s10k5 > 1) c[i].s10k5 -= (int)c[i].s10k5;
+		if (c[i].s10k7 > 1) c[i].s10k7 -= (int)c[i].s10k7;
+		if (c[i].s10k9 > 1) c[i].s10k9 -= (int)c[i].s10k9;
 		i += stride;
 	}
 }
@@ -434,17 +437,28 @@ long finalizeDigit(sJ input, TYPE n) {
 
 long finalizeDigitAlt(sJ input, TYPE n) {
 	double reducer = 1.0;
+
+	//unfortunately 64 is not a power of 16, so if n is < 2
+	//then division is unavoidable
+	//this division must occur before any modulus are taken
+	if(n == 0) reducer /= 64.0;
+	else if (n == 1) reducer /= 4.0;
+
+	//logic relating to 1024 not being a power of 16 and having to divide by 64
+	int loopLimit = (2 * n - 3) % 5;
+	if (n < 2) n = 0;
+	else n = (2 * n - 3) / 5;
+
 	double trash = 0.0;
-	double s4k1 = input.s4k1;//modf(input.s4k1, &trash);
-	double s4k3 = input.s4k3;//modf(input.s4k3, &trash);
-	double s10k1 = input.s10k1;//modf(input.s10k1, &trash);
-	double s10k3 = input.s10k3;//modf(input.s10k3, &trash);
-	double s10k5 = input.s10k5;//modf(input.s10k5, &trash);
-	double s10k7 = input.s10k7;//modf(input.s10k7, &trash);
-	double s10k9 = input.s10k9;//modf(input.s10k9, &trash);
-	int loopLimit = (2 * n) % 5;
-	n = (2 * n) / 5;
-	if (n < 16000) {
+	double s4k1 = input.s4k1 * reducer;//modf(input.s4k1, &trash);
+	double s4k3 = input.s4k3 * reducer;//modf(input.s4k3, &trash);
+	double s10k1 = input.s10k1 * reducer;//modf(input.s10k1, &trash);
+	double s10k3 = input.s10k3 * reducer;//modf(input.s10k3, &trash);
+	double s10k5 = input.s10k5 * reducer;//modf(input.s10k5, &trash);
+	double s10k7 = input.s10k7 * reducer;//modf(input.s10k7, &trash);
+	double s10k9 = input.s10k9 * reducer;//modf(input.s10k9, &trash);
+	
+	//if (n < 16000) {
 		for (int i = 0; i < 5; i++) {
 			n++;
 			double sign = 1.0;
@@ -459,19 +473,35 @@ long finalizeDigitAlt(sJ input, TYPE n) {
 			s10k7 += sign * reducer / (10.0 * nD + 7.0);
 			s10k9 += sign * reducer / (10.0 * nD + 9.0);
 		}
-	}
-	s4k1 = modf(s4k1, &trash);
-	s4k3 = modf(s4k3, &trash);
-	s10k1 = modf(s10k1, &trash);
-	s10k3 = modf(s10k3, &trash);
-	s10k5 = modf(s10k5, &trash);
-	s10k7 = modf(s10k7, &trash);
+	//}
+
+	//multiply sJs by coefficients from Bellard's formula and then find their fractional parts
+	s4k1 = modf(-32.0*s4k1, &trash);
+	if (s4k1 < 0) s4k1++;
+	s4k3 = modf(-1.0*s4k3, &trash);
+	if (s4k3 < 0) s4k3++;
+	s10k1 = modf(256.0*s10k1, &trash);
+	if (s10k1 < 0) s10k1++;
+	s10k3 = modf(-64.0*s10k3, &trash);
+	if (s10k3 < 0) s10k3++;
+	s10k5 = modf(-4.0*s10k5, &trash);
+	if (s10k5 < 0) s10k5++;
+	s10k7 = modf(-4.0*s10k7, &trash);
+	if (s10k7 < 0) s10k7++;
 	s10k9 = modf(s10k9, &trash);
-	double hexDigit = -32.0*s4k1 - s4k3 + 256.0*s10k1 - 64.0*s10k3 - 4.0*s10k5 - 4.0*s10k7 + s10k9;
-	hexDigit /= 64.0;
-	for (int i = 0; i < loopLimit; i++) hexDigit *= 4.0;	
+	if (s10k9 < 0) s10k9++;
+
+	double hexDigit = s4k1 + s4k3 + s10k1 + s10k3 + s10k5 + s10k7 + s10k9;
 	hexDigit = modf(hexDigit, &trash);
 	if (hexDigit < 0) hexDigit++;
+
+	//16^n is divided by 64 and then combined into chunks of 1024^m
+	//where m is = (2n - 3)/5
+	//because 5 may not evenly divide this, the remaining 4^((2n - 3)%5)
+	//must be multiplied into the formula at the end
+	for (int i = 0; i < loopLimit; i++) hexDigit *= 4.0;
+	hexDigit = modf(hexDigit, &trash);
+
 	//shift left by 5 hex digits
 	hexDigit *= 16.0*16.0*16.0*16.0*16.0;
 	printf("hexDigit = %.8f\n", hexDigit);
@@ -482,7 +512,7 @@ int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		const TYPE digitPosition = 9999999999;
+		const TYPE digitPosition = 5;
 		const int totalGpus = 2;
 		HANDLE handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];
@@ -491,7 +521,11 @@ int main()
 
 		for (int i = 0; i < totalGpus; i++) {
 
-			gpuData[i].digit = (2LLU * digitPosition) / 5LLU;
+			//convert from number of digits in base16 to base1024
+			//because of the 1/64 in formula, we must subtract log16(64) which is 1.5, so carrying the 2 * (digitPosition - 1.5) = 2 * digitPosition - 3
+			//this is because division messes up with respect to modulus, so use the 16^digitPosition to absorb it
+			if (digitPosition < 2) gpuData[i].digit = 0;
+			else gpuData[i].digit = ((2LLU * digitPosition) - 3LLU) / 5LLU;
 			gpuData[i].gpu = i;
 			gpuData[i].totalGpus = totalGpus;
 			gpuData[i].size = arraySize;
