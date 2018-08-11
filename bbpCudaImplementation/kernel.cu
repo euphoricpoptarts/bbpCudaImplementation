@@ -39,14 +39,14 @@ const int threadCountPerBlock = 64;
 //this is more difficult to optimize but seems to not like odd numbers
 const int blockCount = 560;
 
-__device__ const TYPE baseSystem = 1024;
-__device__ const int baseExpOf2 = 10;
+__device__ __constant__ const TYPE baseSystem = 1024;
+__device__  __constant__ const int baseExpOf2 = 10;
 
 __device__ const int typeSize = sizeof(TYPE) * 8 - 1;
 __device__ const TYPE multiplyModCond = 0x4000000000000000;//2^62
 //__device__ const int int64Size = sizeof(INT_64) * 8 - 1;
 __device__ const INT_64 int64ModCond = 0x40000000;
-__device__ const INT_64 int64MaxBit = 0x8000000000000000;
+__device__  __constant__ const INT_64 int64MaxBit = 0x8000000000000000;
 
 __device__ int printOnce = 0;
 
@@ -256,7 +256,8 @@ __device__ void modExp(unsigned long long base, long exp, long mod, long *output
 //the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
 //this version allows base to be constant, thus reducing total number of moduli which must be calculated
 //geometric mean of multiplication inputs is also substantially lower, allowing faster average multiplications
-__device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask, TYPE *output) {
+//experimented with placing forceinline and noinline on various functions, noinline here had the biggest improvement, no idea why
+__device__ __noinline__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask, TYPE *output) {
 	INT_64 result = baseSystem;
 
 	//only perform modulus operation during loop if result is >= sqrt((BIG_TYPE maximum + 1)/8) (in order to prevent overflowing)
@@ -285,7 +286,7 @@ __device__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask,
 	}
 
 	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
-	//result %= mod;//quickMod(result, mod, &result);
+	result %= mod;//quickMod(result, mod, &result);
 	*output = result;
 }
 
@@ -312,21 +313,21 @@ __device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ 
 	for (TYPE k = start; k <= end; k += stride) {
 		while (highestExpBit > (n - k))  highestExpBit >>= 1;
 		TYPE mod = 4 * k + 1;
-		fractionalPartOfSum(n - k, mod, &(output[gridId].s4k1), highestExpBit, k & 1);
+		fractionalPartOfSum(n - k, mod, &((*output).s4k1), highestExpBit, k & 1);
 		mod += 2;//4k + 3
-		fractionalPartOfSum(n - k, mod, &(output[gridId].s4k3), highestExpBit, k & 1);
+		fractionalPartOfSum(n - k, mod, &((*output).s4k3), highestExpBit, k & 1);
 		mod = 10 * k + 1;
-		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k1), highestExpBit, k & 1);
+		fractionalPartOfSum(n - k, mod, &((*output).s10k1), highestExpBit, k & 1);
 		mod += 2;//10k + 3
-		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k3), highestExpBit, k & 1);
+		fractionalPartOfSum(n - k, mod, &((*output).s10k3), highestExpBit, k & 1);
 		mod += 2;//10k + 5
-		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k5), highestExpBit, k & 1);
+		fractionalPartOfSum(n - k, mod, &((*output).s10k5), highestExpBit, k & 1);
 		mod += 2;//10k + 7
-		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k7), highestExpBit, k & 1);
+		fractionalPartOfSum(n - k, mod, &((*output).s10k7), highestExpBit, k & 1);
 		mod += 2;//10k + 9
-		fractionalPartOfSum(n - k, mod, &(output[gridId].s10k9), highestExpBit, k & 1);
+		fractionalPartOfSum(n - k, mod, &((*output).s10k9), highestExpBit, k & 1);
 		if (!progressCheck) {
-			//only 1 thread ever updates the progress
+			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
 			*progress = k;
 		}
 	}
@@ -339,7 +340,7 @@ __global__ void bbpKernel(sJ *c, volatile INT_64 *progress, TYPE digit, int gpuN
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
 	TYPE start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
-	bbp(digit, start, end, gridId, stride, c, progress, progressCheck);
+	bbp(digit, start, end, gridId, stride, c + gridId, progress, progressCheck);
 }
 
 //stride over current leaves of reduce tree
@@ -458,7 +459,7 @@ long finalizeDigitAlt(sJ input, TYPE n) {
 	double s10k7 = input.s10k7 * reducer;//modf(input.s10k7, &trash);
 	double s10k9 = input.s10k9 * reducer;//modf(input.s10k9, &trash);
 	
-	//if (n < 16000) {
+	if (n < 16000) {
 		for (int i = 0; i < 5; i++) {
 			n++;
 			double sign = 1.0;
@@ -473,7 +474,7 @@ long finalizeDigitAlt(sJ input, TYPE n) {
 			s10k7 += sign * reducer / (10.0 * nD + 7.0);
 			s10k9 += sign * reducer / (10.0 * nD + 9.0);
 		}
-	//}
+	}
 
 	//multiply sJs by coefficients from Bellard's formula and then find their fractional parts
 	s4k1 = modf(-32.0*s4k1, &trash);
@@ -512,7 +513,7 @@ int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		const TYPE digitPosition = 5;
+		const TYPE digitPosition = 1249999999999;
 		const int totalGpus = 2;
 		HANDLE handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];

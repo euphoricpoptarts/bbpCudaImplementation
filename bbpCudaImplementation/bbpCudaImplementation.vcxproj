@@ -80,6 +80,9 @@
       <FastMath>true</FastMath>
       <GPUDebugInfo>false</GPUDebugInfo>
       <GenerateRelocatableDeviceCode>false</GenerateRelocatableDeviceCode>
+      <RuntimeChecks>InheritFromHost</RuntimeChecks>
+      <TypeInfo>InheritFromHost</TypeInfo>
+      <HostDebugInfo>true</HostDebugInfo>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
