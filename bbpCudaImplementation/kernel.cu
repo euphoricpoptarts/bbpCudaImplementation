@@ -128,7 +128,7 @@ __device__ void findMultiplierHighestBitHackersDelight(TYPE multiplier, TYPE *ou
 }
 
 __device__ void modMultiplyLeftToRight(const TYPE multiplicand, const TYPE multiplier, TYPE mod, TYPE *output) {
-	TYPE result = multiplicand;
+	*output = multiplicand;
 
 	TYPE highestBitMask = 0;
 
@@ -136,15 +136,14 @@ __device__ void modMultiplyLeftToRight(const TYPE multiplicand, const TYPE multi
 
 	while (highestBitMask > 1) {
 		//only perform modulus operation during loop if result is >= (TYPE maximum + 1)/4 (in order to prevent overflowing)
-		if (result >= multiplyModCond) result %= mod;
-		result <<= 1;
+		if (*output >= multiplyModCond) *output %= mod;
+		*output <<= 1;
 		highestBitMask >>= 1;
-		if (multiplier&highestBitMask)	result += multiplicand;
+		if (multiplier&highestBitMask)	*output += multiplicand;
 	}
 
 	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
-	result %= mod;
-	*output = result;
+	*output %= mod;
 }
 
 __device__ void modMultiplyRightToLeft(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, INT_64 *output) {
@@ -157,10 +156,10 @@ __device__ void modMultiplyRightToLeft(INT_64 multiplicand, INT_64 multiplier, I
 			result += multiplicand;
 
 			//only perform modulus operation during loop if result is >= (INT_64 maximum + 1)/2 (in order to prevent overflowing)
-			if (result >= int64MaxBit) result %= mod;
+			if (result >= mod) result -= mod;
 		}
 		multiplicand <<= 1;
-		if (multiplicand >= int64MaxBit) multiplicand %= mod;
+		if (multiplicand >= mod) multiplicand -= mod;
 		multiplier >>= 1;
 	}
 
@@ -172,7 +171,7 @@ __device__ void modMultiplyRightToLeft(INT_64 multiplicand, INT_64 multiplier, I
 //leverages a machine instruction that returns the highest 64 bits of the multiplication operation
 //multiplicand and multiplier should always be less than mod (may work correctly even if this is not the case)
 //maxMod is constant with respect to each mod, therefore best place to calculate is in modExp functions
-__device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, INT_64 maxMod, INT_64 *output) {
+__device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, INT_64 maxMod, INT_64* output) {
 	INT_64	hi = __umul64hi(multiplicand, multiplier);
 	INT_64 result = (multiplicand * multiplier) % mod;
 	while (hi) {
@@ -188,30 +187,16 @@ __device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, INT_64 
 		result +=  lo;
 		hi = __umul64hi(hi, maxMod);
 	}
-	*output = result % mod;
+	if(result >= mod) result %= mod;
+	*output = result;
 }
 
-//leverages a machine instruction that returns the highest 64 bits of the multiplication operation
-//multiplicand and multiplier should always be less than mod (may work correctly even if this is not the case)
-//uses bitshifts to avoid multiplications inside the loop
-//slower than other version (but could be faster if mod is close to 2^63)
-__device__ void modMultiply64BitAlt(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, INT_64 *output) {
-	INT_64	hi = __umul64hi(multiplicand, multiplier);
-	INT_64 result = (multiplicand * multiplier) % mod;
+//an experiment to see if reducing the number of arguments saves any time
+__device__ void modSquare64Bit(INT_64 *number, INT_64 mod, INT_64 maxMod) {
+	INT_64	hi = __umul64hi(*number, *number);
+	*number = (*number * *number) % mod;
 	while (hi) {
-
-		//determine the number of bits to shift so that hi >= 2^63
-		int leading = __clzll(hi);
-
-		//hi is the highest 64 bits of multiplicand*multiplier
-		//so hi is actually hi*2^64
-		//shifting by leading does not change the true value, as (hi*2^leading)*2^(64 - leading) = hi*2^64
-		hi <<= leading;
-
-		hi %= mod;
-
-		INT_64 lo = hi << (64 - leading);
-		hi >>= leading;
+		INT_64 lo = hi * maxMod;
 
 		//multiplyModCond should be (2^64)/(number of loop iterations)
 		//where loop iterations are roughly 64/(64 - log2(mod))
@@ -220,9 +205,40 @@ __device__ void modMultiply64BitAlt(INT_64 multiplicand, INT_64 multiplier, INT_
 		//for 2^40 number of loops is 2, for 2^50 number of loops is 4
 		if (lo > multiplyModCond) lo %= mod;
 
-		result += lo;
+		*number += lo;
+		hi = __umul64hi(hi, maxMod);
 	}
-	*output = result % mod;
+	if(*number >= mod) *number %= mod;
+}
+
+//leverages a machine instruction that returns the highest 64 bits of the multiplication operation
+//multiplicand and multiplier should always be less than mod (may work correctly even if this is not the case)
+//uses bitshifts and subtraction to avoid multiplications and modulus respectively inside the loop
+//loops more times than other version
+//slower than other version (but could be faster if mod is close to 2^63)
+__device__ void modMultiply64BitAlt(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, const int modMaxBitPos, INT_64 *output) {
+	INT_64	hi = __umul64hi(multiplicand, multiplier);
+	INT_64 result = (multiplicand * multiplier) % mod;
+	int count = 64;
+	while (count > 0) {
+
+		//determine the number of bits to shift hi so that 2*mod > hi > mod
+		int dif = __clzll(hi) - modMaxBitPos;
+
+		if (dif > count) dif = count;
+
+		//hi is the highest 64 bits of multiplicand*multiplier
+		//so hi is actually hi*2^64
+		//takes bits from 2^64 and gives them to hi until 2^64 is reduced to 2^0
+		//each step of loop only gives as many bits to hi as to satisfy 2*mod > hi > mod
+		hi <<= dif;
+
+		if(hi >= mod) hi -= mod;
+
+		count -= dif;
+	}
+	*output = (result + hi);
+	if(*output > mod) *output -= mod;
 }
 
 //perform right-to-left binary exponention taking modulus of both base and result at each step
@@ -257,16 +273,14 @@ __device__ void modExp(unsigned long long base, long exp, long mod, long *output
 //this version allows base to be constant, thus reducing total number of moduli which must be calculated
 //geometric mean of multiplication inputs is also substantially lower, allowing faster average multiplications
 //experimented with placing forceinline and noinline on various functions, noinline here had the biggest improvement, no idea why
-__device__ __noinline__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask, TYPE *output) {
-	INT_64 result = baseSystem;
-
-	//only perform modulus operation during loop if result is >= sqrt((BIG_TYPE maximum + 1)/8) (in order to prevent overflowing)
-	//INT_64 modCond = int64ModCond;
+__device__ __noinline__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask, TYPE* output) {
 
 	if (!exp) {
 		//no need to set output to anything as it is already 1
 		return;
 	}
+
+	INT_64 result = baseSystem;
 
 	INT_64 maxMod = int64MaxBit % mod;
 
@@ -275,18 +289,21 @@ __device__ __noinline__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE hi
 	if (maxMod > mod) maxMod %= mod;
 
 	while (highestBitMask > 1) {
-		//this is not necessary as modMultiplyLeftToRight ensures result never overflows a 64 bit buffer
-		//however performing this modulus saves time (more is less)
-		//likely saves performing some moduli in modMultiplyLeftToRight or reduces overall size of arguments
-		if (result >= mod) result %= mod;//quickMod(result, mod, &result);
+		
+		//modMultiply expect inputs to be less than mod
+		if (result >= mod) result %= mod;
 
-		modMultiply64Bit(result, result, mod, maxMod, &result);//result *= result;
+
+		modMultiply64Bit(result, result, mod, maxMod, &result);//result^2
+		//modSquare64Bit(output, mod, maxMod);//result^2
+
 		highestBitMask >>= 1;
-		if (exp&highestBitMask)	result <<= baseExpOf2;//modMultiplyLeftToRight(result, base, mod, &result);//result *= base;
+		if (exp&highestBitMask)	result <<= baseExpOf2;//result * base
 	}
 
-	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
-	result %= mod;//quickMod(result, mod, &result);
+	//modulus may need to be taken after loop as it hasn't necessarily been taken during last loop iteration
+	result %= mod;
+
 	*output = result;
 }
 
@@ -305,7 +322,7 @@ __device__ void fractionalPartOfSum(TYPE exp, TYPE mod, double *partialSum, TYPE
 
 //stride over all parts of summation in bbp formula where k <= n
 //to compute partial sJ sums
-__device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ *output, volatile INT_64 *progress, int progressCheck) {
+__device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ* output, volatile INT_64* progress, int progressCheck) {
 
 	double trash = 0.0;
 	TYPE highestExpBit = 1;
@@ -619,7 +636,7 @@ DWORD WINAPI progressCheck(LPVOID data) {
 
 		double timeEst = 0.1*(1.0 - progress) / (progressAvg);
 		lastProgress = progress;
-		printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds.\n", 100.0*progress, timeEst);
+		printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%.\n", 100.0*progress, timeEst, progressAvg*100.0);
 
 		Sleep(100);
 	}
