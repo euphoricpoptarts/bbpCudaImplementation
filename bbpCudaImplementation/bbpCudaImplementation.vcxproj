@@ -82,8 +82,9 @@
       <GenerateRelocatableDeviceCode>false</GenerateRelocatableDeviceCode>
       <RuntimeChecks>InheritFromHost</RuntimeChecks>
       <TypeInfo>InheritFromHost</TypeInfo>
-      <HostDebugInfo>false</HostDebugInfo>
-      <CodeGeneration>compute_60,sm_60</CodeGeneration>
+      <HostDebugInfo>true</HostDebugInfo>
+      <CodeGeneration>compute_61,sm_61</CodeGeneration>
+      <GenerateLineInfo>true</GenerateLineInfo>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>

@@ -19,8 +19,10 @@ struct sJ {
 
 typedef struct {
 	volatile INT_64 *currentProgress;
+	volatile INT_64 *deviceProg;
 	TYPE maxProgress;
 	int quit = 0;
+	cudaError_t error;
 } PROGRESSDATA, *PPROGRESSDATA;
 
 typedef struct {
@@ -30,8 +32,11 @@ typedef struct {
 	int totalGpus = 0;
 	int size = 0;
 	cudaError_t error;
+	volatile INT_64 *deviceProg;
 } BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
 
+PROGRESSDATA setupProgress();
+DWORD WINAPI progressCheck(LPVOID data);
 DWORD WINAPI cudaBbpLauncher(LPVOID dataV);
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
@@ -324,7 +329,6 @@ __device__ void fractionalPartOfSum(TYPE exp, TYPE mod, double *partialSum, TYPE
 //to compute partial sJ sums
 __device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ* output, volatile INT_64* progress, int progressCheck) {
 
-	double trash = 0.0;
 	TYPE highestExpBit = 1;
 	while (highestExpBit <= n)	highestExpBit <<= 1;
 	for (TYPE k = start; k <= end; k += stride) {
@@ -537,16 +541,34 @@ int main()
 
 		clock_t start = clock();
 
+		INT_64 sumEnd = 0;
+
+		//convert from number of digits in base16 to base1024
+		//because of the 1/64 in formula, we must subtract log16(64) which is 1.5, so carrying the 2 * (digitPosition - 1.5) = 2 * digitPosition - 3
+		//this is because division messes up with respect to modulus, so use the 16^digitPosition to absorb it
+		if (digitPosition < 2) sumEnd = 0;
+		else sumEnd = ((2LLU * digitPosition) - 3LLU) / 5LLU;
+
+		PROGRESSDATA prog = setupProgress();
+
+		if (prog.error) return 1;
+
+		prog.maxProgress = sumEnd;
+
+		HANDLE progThread = CreateThread(NULL, 0, *progressCheck, (LPVOID)&prog, 0, NULL);
+
+		if (progThread == NULL) {
+			fprintf(stderr, "progressCheck thread creation failed\n");
+			return 1;
+		}
+
 		for (int i = 0; i < totalGpus; i++) {
 
-			//convert from number of digits in base16 to base1024
-			//because of the 1/64 in formula, we must subtract log16(64) which is 1.5, so carrying the 2 * (digitPosition - 1.5) = 2 * digitPosition - 3
-			//this is because division messes up with respect to modulus, so use the 16^digitPosition to absorb it
-			if (digitPosition < 2) gpuData[i].digit = 0;
-			else gpuData[i].digit = ((2LLU * digitPosition) - 3LLU) / 5LLU;
+			gpuData[i].digit = sumEnd;
 			gpuData[i].gpu = i;
 			gpuData[i].totalGpus = totalGpus;
 			gpuData[i].size = arraySize;
+			gpuData[i].deviceProg = prog.deviceProg;
 
 
 			handles[i] = CreateThread(NULL, 0, *cudaBbpLauncher, (LPVOID)&(gpuData[i]), 0, NULL);
@@ -588,6 +610,12 @@ int main()
 			cudaResult.s10k9 += output.s10k9;
 		}
 
+		//tell the progress thread to quit
+		prog.quit = 1;
+
+		WaitForSingleObject(progThread, INFINITE);
+		CloseHandle(progThread);
+
 		long hexDigit = finalizeDigitAlt(cudaResult, digitPosition);
 
 		clock_t end = clock();
@@ -613,6 +641,41 @@ int main()
 	}
 }
 
+PROGRESSDATA setupProgress() {
+	PROGRESSDATA threadData;
+	//these variables are linked between host and device memory allowing each to communicate about progress
+	volatile INT_64 *currProgHost, *currProgDevice;
+
+	//allow device to map host memory for progress ticker
+	threadData.error = cudaSetDeviceFlags(cudaDeviceMapHost);
+	if (threadData.error != cudaSuccess) {
+		fprintf(stderr, "cudaSetDeviceFlags failed with error: %s\n", cudaGetErrorString(threadData.error));
+		return threadData;
+	}
+
+	// Allocate Host memory for progress ticker
+	threadData.error = cudaHostAlloc((void**)&currProgHost, sizeof(INT_64), cudaHostAllocMapped);
+	if (threadData.error != cudaSuccess) {
+		fprintf(stderr, "cudaHostAalloc failed!");
+		return threadData;
+	}
+
+	//create link between between host and device memory for progress ticker
+	threadData.error = cudaHostGetDevicePointer((INT_64 **)&currProgDevice, (INT_64 *)currProgHost, 0);
+	if (threadData.error != cudaSuccess) {
+		fprintf(stderr, "cudaHostGetDevicePointer failed!");
+		return threadData;
+	}
+
+	*currProgHost = 0;
+
+	threadData.deviceProg = currProgDevice;
+	threadData.currentProgress = currProgHost;
+	threadData.quit = 0;
+
+	return threadData;
+}
+
 //this function is meant to be run by an independent thread to output progress to the console
 DWORD WINAPI progressCheck(LPVOID data) {
 	PPROGRESSDATA progP = (PPROGRESSDATA)data;
@@ -621,8 +684,8 @@ DWORD WINAPI progressCheck(LPVOID data) {
 
 	std::deque<double> progressQ;
 
-	while(!(*progP).quit) {
-		double progress = (double)(*((*progP).currentProgress)) / (double)(*progP).maxProgress;
+	while(!progP->quit) {
+		double progress = (double)(*(progP->currentProgress)) / (double)progP->maxProgress;
 
 		progressQ.push_front(progress - lastProgress);
 
@@ -647,54 +710,15 @@ DWORD WINAPI progressCheck(LPVOID data) {
 DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, unsigned int size, TYPE digit)
 {
 	PBBPLAUNCHERDATA data = (PBBPLAUNCHERDATA)dataV;
-	int size = (*data).size;
-	int gpu = (*data).gpu;
-	int totalGpus = (*data).totalGpus;
-	INT_64 digit = (*data).digit;
+	int size = data->size;
+	int gpu = data->gpu;
+	int totalGpus = data->totalGpus;
+	INT_64 digit = data->digit;
+	volatile INT_64 * currProgDevice = data->deviceProg;
 	sJ *dev_c = 0;
 	sJ* c = new sJ[size];
 
 	cudaError_t cudaStatus;
-
-	PROGRESSDATA threadData;
-	HANDLE thread;
-	//these variables are linked between host and device memory allowing each to communicate about progress
-	volatile INT_64 *currProgHost, *currProgDevice;
-
-	if (gpu == 0) {
-
-		//allow device to map host memory for progress ticker
-		cudaStatus = cudaSetDeviceFlags(cudaDeviceMapHost);
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaSetDeviceFlags failed with error: %s\n", cudaGetErrorString(cudaStatus));
-			goto Error;
-		}
-
-		// Allocate Host memory for progress ticker
-		cudaStatus = cudaHostAlloc((void**)&currProgHost, sizeof(INT_64), cudaHostAllocMapped);
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaHostAalloc failed!");
-			goto Error;
-		}
-
-		//create link between between host and device memory for progress ticker
-		cudaStatus = cudaHostGetDevicePointer((INT_64 **)&currProgDevice, (INT_64 *)currProgHost, 0);
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaHostGetDevicePointer failed!");
-			goto Error;
-		}
-
-		*currProgHost = 0;
-
-		threadData = { currProgHost, digit, 0 };
-
-		thread = CreateThread(NULL, 0, *progressCheck, (LPVOID)&threadData, 0, NULL);
-
-		if (thread == NULL) {
-			fprintf(stderr, "progressCheck thread creation failed\n");
-			goto Error;
-		}
-	}
 
 	// Choose which GPU to run on, change this on a multi-GPU system.
 	cudaStatus = cudaSetDevice(gpu);
@@ -745,15 +769,6 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 
 		//give the rest of the computer some gpu time to reduce system choppiness
 		Sleep(1);
-	}
-
-	if (gpu == 0) {
-
-		//tell the progress thread to quit
-		threadData.quit = 1;
-
-		WaitForSingleObject(thread, INFINITE);
-		CloseHandle(thread);
 	}
 
 	cudaStatus = reduceSJ(dev_c, size);
