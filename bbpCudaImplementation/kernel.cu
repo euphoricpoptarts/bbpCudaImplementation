@@ -35,7 +35,7 @@ typedef struct {
 DWORD WINAPI cudaBbpLauncher(LPVOID dataV);
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
-const int threadCountPerBlock = 64;
+const int threadCountPerBlock = 128;
 //this is more difficult to optimize but seems to not like odd numbers
 const int blockCount = 560;
 
