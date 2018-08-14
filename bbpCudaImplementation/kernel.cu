@@ -10,6 +10,9 @@
 #include <deque>
 #include <atomic>
 #include <fstream>
+#include <iostream>
+#include <filesystem>
+#include <string>
 
 #define TYPE unsigned long long
 #define INT_64 unsigned long long
@@ -40,6 +43,8 @@ struct sJ {
 typedef struct {
 	volatile INT_64 *currentProgress;
 	volatile INT_64 *deviceProg;
+	sJ previousCache;
+	double previousTime;
 	sJ status[totalGpus];
 	volatile INT_64 nextStrideBegin[totalGpus];
 	TYPE maxProgress;
@@ -52,6 +57,7 @@ typedef struct {
 typedef struct {
 	sJ output;
 	INT_64 digit;
+	INT_64 beginFrom;
 	int gpu = 0;
 	int totalGpus = 0;
 	int size = 0;
@@ -546,29 +552,107 @@ long finalizeDigitAlt(sJ input, TYPE n) {
 	return (long)hexDigit;
 }
 
+void checkForProgressCache(INT_64 digit, INT_64 * contFrom, sJ * cache, double * previousTime) {
+	std::string target = "digit" + std::to_string(digit);
+	std::string pToFile;
+	int found = 0;
+	for (auto& element : std::experimental::filesystem::directory_iterator("progressCache")) {
+		std::string name = element.path().filename().string();
+		//filename begins with desired string
+		if (name.compare(0, target.length(), target) == 0) {
+			pToFile = element.path().string();
+			found = 1;
+		}
+		else if (found) {
+			break;
+		}
+	}
+	if (found) {
+		int chosen = 0;
+		while (!chosen) {
+			chosen = 1;
+			std::cout << "A cache of a previous computation for this digit exists." << std::endl;
+			std::cout << "Would you like to reload the most recent cache (" << pToFile << ")? y\\n" << std::endl;
+			char choice;
+			std::cin >> choice;
+			if (choice == 'y') {
+				std::cout << "Loading cache and continuing computation." << std::endl;
+				try {
+					std::ifstream file;
+					file.open(pToFile);
+
+					file >> *contFrom;
+
+					//theoretically the standard specifies that this works for doubles
+					//however msvc doesn't output correctly for doubles with hexfloat (it outputs as a float)
+					//but it appears to work correctly for reading into doubles as tested so far
+					file >> std::hexfloat >> *previousTime;
+					file >> std::hexfloat >> cache->s4k1;
+					file >> std::hexfloat >> cache->s4k3;
+					file >> std::hexfloat >> cache->s10k1;
+					file >> std::hexfloat >> cache->s10k3;
+					file >> std::hexfloat >> cache->s10k5;
+					file >> std::hexfloat >> cache->s10k7;
+					file >> std::hexfloat >> cache->s10k9;
+				}
+				catch(std::ifstream::failure& e) {
+					fprintf(stderr, "Error opening file %s\n", pToFile);
+					fprintf(stderr, "%s\n", e.what());
+					std::cout << "Could not reload cache. Beginning computation without reloading." << std::endl;
+				}
+			}
+			else if (choice == 'n') {
+				std::cout << "Beginning computation without reloading." << std::endl;
+			}
+			else {
+				std::cout << "Invalid input" << std::endl;
+				// Ignore to the end of line
+				std::cin.clear();
+				std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+				chosen = 0;
+			}
+		}
+	}
+	else {
+		std::cout << "No progress cache file found. Beginning computation without reloading." << std::endl;
+	}
+}
+
 int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		const TYPE digitPosition = 99999999999;
-		HANDLE handles[totalGpus];
-		BBPLAUNCHERDATA gpuData[totalGpus];
-
-		clock_t start = clock();
+		INT_64 hexDigitPosition;
+		std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
+		std::cin >> hexDigitPosition;
+		//subtract 1 to convert to 0-indexed
+		hexDigitPosition--;
 
 		INT_64 sumEnd = 0;
 
 		//convert from number of digits in base16 to base1024
 		//because of the 1/64 in formula, we must subtract log16(64) which is 1.5, so carrying the 2 * (digitPosition - 1.5) = 2 * digitPosition - 3
 		//this is because division messes up with respect to modulus, so use the 16^digitPosition to absorb it
-		if (digitPosition < 2) sumEnd = 0;
-		else sumEnd = ((2LLU * digitPosition) - 3LLU) / 5LLU;
+		if (hexDigitPosition < 2) sumEnd = 0;
+		else sumEnd = ((2LLU * hexDigitPosition) - 3LLU) / 5LLU;
+
+		INT_64 beginFrom = 0;
+		sJ cudaResult;
+		double previousTime = 0.0;
+		checkForProgressCache(sumEnd, &beginFrom, &cudaResult, &previousTime);
+
+		HANDLE handles[totalGpus];
+		BBPLAUNCHERDATA gpuData[totalGpus];
+
+		clock_t start = clock();
 
 		PPROGRESSDATA prog = setupProgress();
 
-		if (prog->error) return 1;
+		if (prog->error != cudaSuccess) return 1;
 		prog->begin = start;
 		prog->maxProgress = sumEnd;
+		prog->previousCache = cudaResult;
+		prog->previousTime = previousTime;
 
 		HANDLE progThread = CreateThread(NULL, 0, *progressCheck, (LPVOID)prog, 0, NULL);
 
@@ -587,6 +671,7 @@ int main()
 			gpuData[i].status = &(prog->status[i]);
 			gpuData[i].dataWritten = &(prog->dataWritten);
 			gpuData[i].nextStrideBegin = &(prog->nextStrideBegin[i]);
+			gpuData[i].beginFrom = beginFrom;
 
 
 			handles[i] = CreateThread(NULL, 0, *cudaBbpLauncher, (LPVOID)&(gpuData[i]), 0, NULL);
@@ -596,8 +681,6 @@ int main()
 				return 1;
 			}
 		}
-
-		sJ cudaResult;
 
 		cudaError_t cudaStatus;
 
@@ -626,14 +709,14 @@ int main()
 
 		free(prog);
 
-		long hexDigit = finalizeDigitAlt(cudaResult, digitPosition);
+		long hexDigit = finalizeDigitAlt(cudaResult, hexDigitPosition);
 
 		clock_t end = clock();
 
 		printf("pi at hexadecimal digit %llu is %05X\n",
-			digitPosition + 1, hexDigit);
+			hexDigitPosition + 1, hexDigit);
 
-		printf("Computed in %.8f seconds\n", (double)(end - start) / (double) CLOCKS_PER_SEC);
+		printf("Computed in %.8f seconds\n", previousTime + ((double)(end - start) / (double) CLOCKS_PER_SEC));
 
 		// cudaDeviceReset must be called before exiting in order for profiling and
 		// tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -712,7 +795,8 @@ DWORD WINAPI progressCheck(LPVOID data) {
 
 		double timeEst = 0.1*(1.0 - progress) / (progressAvg);
 		lastProgress = progress;
-		printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, progressAvg*100.0, (double)(clock() - progP->begin) / (double) CLOCKS_PER_SEC);
+		double time = progP->previousTime + ((double)(clock() - progP->begin) / (double)CLOCKS_PER_SEC);
+		printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, progressAvg*100.0, time);
 
 		int expected = totalGpus;
 
@@ -733,29 +817,29 @@ DWORD WINAPI progressCheck(LPVOID data) {
 
 				snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%02.6f.dat", progP->maxProgress, 100.0*savedProgress);
 
-
-				try {
-					std::ofstream file;
-					file.open(buffer, std::ofstream::out);
-
+				//would like to do this with ofstream and std::hexfloat
+				//but msvc is a microsoft product so...
+				FILE * file;
+				file = fopen(buffer, "w+");
+				if(file != NULL) {
 					printf("Writing data to disk\n");
-					file << contProcess << std::endl;
-					sJ currStatus;
+					fprintf(file,"%llu\n",contProcess);
+					fprintf(file, "%a\n", time);
+					sJ currStatus = progP->previousCache;
 					for (int i = 0; i < totalGpus; i++) {
 						sJAdd(&currStatus, progP->status + i);
 					}
-					file << std::hexfloat << currStatus.s4k1 << std::endl;
-					file << std::hexfloat << currStatus.s4k3 << std::endl;
-					file << std::hexfloat << currStatus.s10k1 << std::endl;
-					file << std::hexfloat << currStatus.s10k3 << std::endl;
-					file << std::hexfloat << currStatus.s10k5 << std::endl;
-					file << std::hexfloat << currStatus.s10k7 << std::endl;
-					file << std::hexfloat << currStatus.s10k9 << std::endl;
-					file.close();
+					fprintf(file, "%a\n", currStatus.s4k1);
+					fprintf(file, "%a\n", currStatus.s4k3);
+					fprintf(file, "%a\n", currStatus.s10k1);
+					fprintf(file, "%a\n", currStatus.s10k3);
+					fprintf(file, "%a\n", currStatus.s10k5);
+					fprintf(file, "%a\n", currStatus.s10k7);
+					fprintf(file, "%a", currStatus.s10k9);
+					fclose(file);
 				}
-				catch (const std::ofstream::failure& e) {
+				else {
 					fprintf(stderr, "Error opening file %s\n", buffer);
-					fprintf(stderr, "%s\n", e.what());
 				}
 			}
 			else {
@@ -812,12 +896,12 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 	//need to round up
 	//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
 	//even when digit/launchWidth is an integer, it is necessary to add 1
-	INT_64 neededLaunches = (digit / launchWidth) + 1LLU;
+	INT_64 neededLaunches = ((digit - data->beginFrom) / launchWidth) + 1LLU;
 
 	for (INT_64 launch = 0; launch < neededLaunches; launch++) {
 
-		INT_64 begin = launchWidth * launch;
-		INT_64 end = launchWidth * (launch + 1) - 1;
+		INT_64 begin = data->beginFrom + (launchWidth * launch);
+		INT_64 end = data->beginFrom + (launchWidth * (launch + 1)) - 1;
 		if (end > digit) end = digit;
 
 		// Launch a kernel on the GPU with one thread for each element.
@@ -862,7 +946,7 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 			}
 
 			*(data->status) = c[0];
-			*(data->nextStrideBegin) = launchWidth * (launch + 1LLU);
+			*(data->nextStrideBegin) = data->beginFrom + (launchWidth * (launch + 1LLU));
 			std::atomic_fetch_add(data->dataWritten, 1);
 		}
 
