@@ -8,36 +8,13 @@
 #include <time.h>
 #include <Windows.h>
 #include <deque>
+#include <atomic>
+#include <fstream>
 
 #define TYPE unsigned long long
 #define INT_64 unsigned long long
 
-struct sJ {
-	double s1 = 0.0, s4 = 0.0, s5 = 0.0, s6 = 0.0;
-	double s4k1 = 0.0, s4k3 = 0.0, s10k1 = 0.0, s10k3 = 0.0, s10k5 = 0.0, s10k7 = 0.0, s10k9 = 0.0;
-};
-
-typedef struct {
-	volatile INT_64 *currentProgress;
-	volatile INT_64 *deviceProg;
-	TYPE maxProgress;
-	int quit = 0;
-	cudaError_t error;
-} PROGRESSDATA, *PPROGRESSDATA;
-
-typedef struct {
-	sJ output;
-	INT_64 digit;
-	int gpu = 0;
-	int totalGpus = 0;
-	int size = 0;
-	cudaError_t error;
-	volatile INT_64 *deviceProg;
-} BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
-
-PROGRESSDATA setupProgress();
-DWORD WINAPI progressCheck(LPVOID data);
-DWORD WINAPI cudaBbpLauncher(LPVOID dataV);
+const int totalGpus = 2;
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
 const int threadCountPerBlock = 128;
@@ -49,11 +26,67 @@ __device__  __constant__ const int baseExpOf2 = 10;
 
 __device__ const int typeSize = sizeof(TYPE) * 8 - 1;
 __device__ const TYPE multiplyModCond = 0x4000000000000000;//2^62
-//__device__ const int int64Size = sizeof(INT_64) * 8 - 1;
+														   //__device__ const int int64Size = sizeof(INT_64) * 8 - 1;
 __device__ const INT_64 int64ModCond = 0x40000000;
 __device__  __constant__ const INT_64 int64MaxBit = 0x8000000000000000;
 
 __device__ int printOnce = 0;
+
+struct sJ {
+	double s1 = 0.0, s4 = 0.0, s5 = 0.0, s6 = 0.0;
+	double s4k1 = 0.0, s4k3 = 0.0, s10k1 = 0.0, s10k3 = 0.0, s10k5 = 0.0, s10k7 = 0.0, s10k9 = 0.0;
+};
+
+typedef struct {
+	volatile INT_64 *currentProgress;
+	volatile INT_64 *deviceProg;
+	sJ status[totalGpus];
+	volatile INT_64 nextStrideBegin[totalGpus];
+	TYPE maxProgress;
+	volatile int quit = 0;
+	cudaError_t error;
+	clock_t begin;
+	volatile std::atomic<int> dataWritten;
+} PROGRESSDATA, *PPROGRESSDATA;
+
+typedef struct {
+	sJ output;
+	INT_64 digit;
+	int gpu = 0;
+	int totalGpus = 0;
+	int size = 0;
+	cudaError_t error;
+	volatile INT_64 *deviceProg;
+	sJ * status;
+	volatile INT_64 * nextStrideBegin;
+	volatile std::atomic<int> * dataWritten;
+} BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
+
+PPROGRESSDATA setupProgress();
+DWORD WINAPI progressCheck(LPVOID data);
+DWORD WINAPI cudaBbpLauncher(LPVOID dataV);
+
+//adds all elements of addend and augend, storing in addend
+__device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
+	addend->s1 += augend->s1;
+	addend->s4 += augend->s4;
+	addend->s5 += augend->s5;
+	addend->s6 += augend->s6;
+	addend->s4k1 += augend->s4k1;
+	addend->s4k3 += augend->s4k3;
+	addend->s10k1 += augend->s10k1;
+	addend->s10k3 += augend->s10k3;
+	addend->s10k5 += augend->s10k5;
+	addend->s10k7 += augend->s10k7;
+	addend->s10k9 += augend->s10k9;
+	if (addend->s4k1 >= 1.0) addend->s4k1 -= (int)addend->s4k1;
+	if (addend->s4k3 >= 1.0) addend->s4k3 -= (int)addend->s4k3;
+	if (addend->s10k1 >= 1.0) addend->s10k1 -= (int)addend->s10k1;
+	if (addend->s10k3 >= 1.0) addend->s10k3 -= (int)addend->s10k3;
+	if (addend->s10k5 >= 1.0) addend->s10k5 -= (int)addend->s10k5;
+	if (addend->s10k7 >= 1.0) addend->s10k7 -= (int)addend->s10k7;
+	if (addend->s10k9 >= 1.0) addend->s10k9 -= (int)addend->s10k9;
+}
 
 //not actually quick
 __device__ void quickMod(INT_64 input, const INT_64 mod, INT_64 *output) {
@@ -370,24 +403,7 @@ __global__ void reduceSJKernel(sJ *c, int offset, int stop) {
 	int i = threadIdx.x + blockDim.x * blockIdx.x;
 	while (i < stop) {
 		int augend = i + offset;
-		c[i].s1 += c[augend].s1;
-		c[i].s4 += c[augend].s4;
-		c[i].s5 += c[augend].s5;
-		c[i].s6 += c[augend].s6;
-		c[i].s4k1 += c[augend].s4k1;
-		c[i].s4k3 += c[augend].s4k3;
-		c[i].s10k1 += c[augend].s10k1;
-		c[i].s10k3 += c[augend].s10k3;
-		c[i].s10k5 += c[augend].s10k5;
-		c[i].s10k7 += c[augend].s10k7;
-		c[i].s10k9 += c[augend].s10k9;
-		if (c[i].s4k1 > 1) c[i].s4k1 -= (int)c[i].s4k1;
-		if (c[i].s4k3 > 1) c[i].s4k3 -= (int)c[i].s4k3;
-		if (c[i].s10k1 > 1) c[i].s10k1 -= (int)c[i].s10k1;
-		if (c[i].s10k3 > 1) c[i].s10k3 -= (int)c[i].s10k3;
-		if (c[i].s10k5 > 1) c[i].s10k5 -= (int)c[i].s10k5;
-		if (c[i].s10k7 > 1) c[i].s10k7 -= (int)c[i].s10k7;
-		if (c[i].s10k9 > 1) c[i].s10k9 -= (int)c[i].s10k9;
+		sJAdd(c + i, c + augend);
 		i += stride;
 	}
 }
@@ -534,8 +550,7 @@ int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		const TYPE digitPosition = 9999999999;
-		const int totalGpus = 2;
+		const TYPE digitPosition = 99999999999;
 		HANDLE handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];
 
@@ -549,13 +564,13 @@ int main()
 		if (digitPosition < 2) sumEnd = 0;
 		else sumEnd = ((2LLU * digitPosition) - 3LLU) / 5LLU;
 
-		PROGRESSDATA prog = setupProgress();
+		PPROGRESSDATA prog = setupProgress();
 
-		if (prog.error) return 1;
+		if (prog->error) return 1;
+		prog->begin = start;
+		prog->maxProgress = sumEnd;
 
-		prog.maxProgress = sumEnd;
-
-		HANDLE progThread = CreateThread(NULL, 0, *progressCheck, (LPVOID)&prog, 0, NULL);
+		HANDLE progThread = CreateThread(NULL, 0, *progressCheck, (LPVOID)prog, 0, NULL);
 
 		if (progThread == NULL) {
 			fprintf(stderr, "progressCheck thread creation failed\n");
@@ -568,7 +583,10 @@ int main()
 			gpuData[i].gpu = i;
 			gpuData[i].totalGpus = totalGpus;
 			gpuData[i].size = arraySize;
-			gpuData[i].deviceProg = prog.deviceProg;
+			gpuData[i].deviceProg = prog->deviceProg;
+			gpuData[i].status = &(prog->status[i]);
+			gpuData[i].dataWritten = &(prog->dataWritten);
+			gpuData[i].nextStrideBegin = &(prog->nextStrideBegin[i]);
 
 
 			handles[i] = CreateThread(NULL, 0, *cudaBbpLauncher, (LPVOID)&(gpuData[i]), 0, NULL);
@@ -597,24 +615,16 @@ int main()
 			sJ output = gpuData[i].output;
 
 			//sum results from gpus
-			cudaResult.s1 += output.s1;
-			cudaResult.s4 += output.s4;
-			cudaResult.s5 += output.s5;
-			cudaResult.s6 += output.s6;
-			cudaResult.s4k1 += output.s4k1;
-			cudaResult.s4k3 += output.s4k3;
-			cudaResult.s10k1 += output.s10k1;
-			cudaResult.s10k3 += output.s10k3;
-			cudaResult.s10k5 += output.s10k5;
-			cudaResult.s10k7 += output.s10k7;
-			cudaResult.s10k9 += output.s10k9;
+			sJAdd(&cudaResult, &output);
 		}
 
 		//tell the progress thread to quit
-		prog.quit = 1;
+		prog->quit = 1;
 
 		WaitForSingleObject(progThread, INFINITE);
 		CloseHandle(progThread);
+
+		free(prog);
 
 		long hexDigit = finalizeDigitAlt(cudaResult, digitPosition);
 
@@ -623,7 +633,7 @@ int main()
 		printf("pi at hexadecimal digit %llu is %05X\n",
 			digitPosition + 1, hexDigit);
 
-		printf("Computed in %.8f seconds\n", (double)(end - start) / CLOCKS_PER_SEC);
+		printf("Computed in %.8f seconds\n", (double)(end - start) / (double) CLOCKS_PER_SEC);
 
 		// cudaDeviceReset must be called before exiting in order for profiling and
 		// tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -641,37 +651,40 @@ int main()
 	}
 }
 
-PROGRESSDATA setupProgress() {
-	PROGRESSDATA threadData;
+PPROGRESSDATA setupProgress() {
+	PPROGRESSDATA threadData = new PROGRESSDATA();
+
+	std::atomic_init(&threadData->dataWritten, 0);
+
 	//these variables are linked between host and device memory allowing each to communicate about progress
 	volatile INT_64 *currProgHost, *currProgDevice;
 
 	//allow device to map host memory for progress ticker
-	threadData.error = cudaSetDeviceFlags(cudaDeviceMapHost);
-	if (threadData.error != cudaSuccess) {
-		fprintf(stderr, "cudaSetDeviceFlags failed with error: %s\n", cudaGetErrorString(threadData.error));
+	threadData->error = cudaSetDeviceFlags(cudaDeviceMapHost);
+	if (threadData->error != cudaSuccess) {
+		fprintf(stderr, "cudaSetDeviceFlags failed with error: %s\n", cudaGetErrorString(threadData->error));
 		return threadData;
 	}
 
 	// Allocate Host memory for progress ticker
-	threadData.error = cudaHostAlloc((void**)&currProgHost, sizeof(INT_64), cudaHostAllocMapped);
-	if (threadData.error != cudaSuccess) {
+	threadData->error = cudaHostAlloc((void**)&currProgHost, sizeof(INT_64), cudaHostAllocMapped);
+	if (threadData->error != cudaSuccess) {
 		fprintf(stderr, "cudaHostAalloc failed!");
 		return threadData;
 	}
 
 	//create link between between host and device memory for progress ticker
-	threadData.error = cudaHostGetDevicePointer((INT_64 **)&currProgDevice, (INT_64 *)currProgHost, 0);
-	if (threadData.error != cudaSuccess) {
+	threadData->error = cudaHostGetDevicePointer((INT_64 **)&currProgDevice, (INT_64 *)currProgHost, 0);
+	if (threadData->error != cudaSuccess) {
 		fprintf(stderr, "cudaHostGetDevicePointer failed!");
 		return threadData;
 	}
 
 	*currProgHost = 0;
 
-	threadData.deviceProg = currProgDevice;
-	threadData.currentProgress = currProgHost;
-	threadData.quit = 0;
+	threadData->deviceProg = currProgDevice;
+	threadData->currentProgress = currProgHost;
+	threadData->quit = 0;
 
 	return threadData;
 }
@@ -699,7 +712,57 @@ DWORD WINAPI progressCheck(LPVOID data) {
 
 		double timeEst = 0.1*(1.0 - progress) / (progressAvg);
 		lastProgress = progress;
-		printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%.\n", 100.0*progress, timeEst, progressAvg*100.0);
+		printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, progressAvg*100.0, (double)(clock() - progP->begin) / (double) CLOCKS_PER_SEC);
+
+		int expected = totalGpus;
+
+		if (std::atomic_compare_exchange_strong(&progP->dataWritten, &expected, 0)) {
+
+			//ensure all sJs in status are from same stride
+			//this should always be the case since each 1000 strides are separated by about 90 seconds currently
+			//it would be very unlikely for one gpu to get 1000 strides ahead of another, unless the GPUs were not the same
+			int sJsAligned = 1;
+			INT_64 contProcess = progP->nextStrideBegin[0];
+			for (int i = 1; i < totalGpus; i++) sJsAligned &= (progP->nextStrideBegin[i] == contProcess);
+			
+			if (sJsAligned) {
+
+				char buffer[100];
+
+				double savedProgress = (double) (contProcess - 1LLU) / (double)progP->maxProgress;
+
+				snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%02.6f.dat", progP->maxProgress, 100.0*savedProgress);
+
+
+				try {
+					std::ofstream file;
+					file.open(buffer, std::ofstream::out);
+
+					printf("Writing data to disk\n");
+					file << contProcess << std::endl;
+					sJ currStatus;
+					for (int i = 0; i < totalGpus; i++) {
+						sJAdd(&currStatus, progP->status + i);
+					}
+					file << std::hexfloat << currStatus.s4k1 << std::endl;
+					file << std::hexfloat << currStatus.s4k3 << std::endl;
+					file << std::hexfloat << currStatus.s10k1 << std::endl;
+					file << std::hexfloat << currStatus.s10k3 << std::endl;
+					file << std::hexfloat << currStatus.s10k5 << std::endl;
+					file << std::hexfloat << currStatus.s10k7 << std::endl;
+					file << std::hexfloat << currStatus.s10k9 << std::endl;
+					file.close();
+				}
+				catch (const std::ofstream::failure& e) {
+					fprintf(stderr, "Error opening file %s\n", buffer);
+					fprintf(stderr, "%s\n", e.what());
+				}
+			}
+			else {
+				fprintf(stderr, "sJs are misaligned, could not write to disk!\n");
+				for (int i = 0; i < totalGpus; i++) fprintf(stderr, "sJ %d alignment is %llu\n", i, progP->nextStrideBegin[i]);
+			}
+		}
 
 		Sleep(100);
 	}
@@ -716,7 +779,8 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 	INT_64 digit = data->digit;
 	volatile INT_64 * currProgDevice = data->deviceProg;
 	sJ *dev_c = 0;
-	sJ* c = new sJ[size];
+	sJ* c = new sJ[1];
+	sJ *dev_ex = 0;
 
 	cudaError_t cudaStatus;
 
@@ -727,7 +791,14 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 		goto Error;
 	}
 
-	// Allocate GPU buffer for output vector    .
+	// Allocate GPU buffer for temp vector
+	cudaStatus = cudaMalloc((void**)&dev_ex, size * sizeof(sJ));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+
+	// Allocate GPU buffer for output vector
 	cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(sJ));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
@@ -736,7 +807,7 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 
 	INT_64 stride =  (INT_64) size * (INT_64) totalGpus;
 
-	INT_64 launchWidth = stride * 128LLU;
+	INT_64 launchWidth = stride * 64LLU;
 
 	//need to round up
 	//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
@@ -767,6 +838,34 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 			goto Error;
 		}
 
+		//on every 1000th launch write data to status buffer for progress thread to save
+		if (launch % 1000 == 0 && launch) {
+
+			//copy current results into temp array to reduce and update status
+			cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ), cudaMemcpyDeviceToDevice);
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaMemcpy failed in status update!\n");
+				goto Error;
+			}
+
+			cudaStatus = reduceSJ(dev_ex, size);
+
+			if (cudaStatus != cudaSuccess) {
+				goto Error;
+			}
+
+			// Copy result (reduced into first element) from GPU buffer to host memory.
+			cudaStatus = cudaMemcpy(c, dev_ex, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaMemcpy failed in status update!\n");
+				goto Error;
+			}
+
+			*(data->status) = c[0];
+			*(data->nextStrideBegin) = launchWidth * (launch + 1LLU);
+			std::atomic_fetch_add(data->dataWritten, 1);
+		}
+
 		//give the rest of the computer some gpu time to reduce system choppiness
 		Sleep(1);
 	}
@@ -777,10 +876,10 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 		goto Error;
 	}
 
-	// Copy result vector from GPU 0 buffer to host memory.
-	cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(sJ), cudaMemcpyDeviceToHost);
+	// Copy result (reduced into first element) from GPU buffer to host memory.
+	cudaStatus = cudaMemcpy(c, dev_c, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy failed!");
+		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;
 	}
 
@@ -789,6 +888,7 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 Error:
 	free(c);
 	cudaFree(dev_c);
+	cudaFree(dev_ex);
 
 	(*data).error = cudaStatus;
 	return 0;
