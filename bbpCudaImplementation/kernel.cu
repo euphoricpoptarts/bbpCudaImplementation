@@ -238,32 +238,44 @@ __device__ void multiply64ResultU128(INT_64 multiplicand, INT_64 multiplier, INT
 		"mov.b64         %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
 		"mov.b64         %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
 		"}"
-		: "=l"(*lo), "=l"(*hi)//"=r"(lolo), "=r"(lohi), "=r"(hilo), "=r"(hihi)
+		: "=l"(*lo), "=l"(*hi)
 		: "l"(multiplicand), "l"(multiplier));
+}
+
+//adds augend to addend
+//if an overflow is detected, add maxMod to augend
+//if that overflows, add it again (as long as the mod for which maxMod is defined is < 2^63, this can't overflow)
+__device__ void addWithCarryConvertedToMod(INT_64 & addend, const INT_64 & augend, const INT_64 & maxMod) {
+	asm("{\n\t"
+		".reg .u32         t0;\n\t"
+		".reg .pred         %p;\n\t"
+		"add.cc.u64        %0, %0, %1;\n\t" //addend = addend + augend
+		"addc.u32          t0, 0, 0;\n\t"
+		"setp.eq.u32       %p, 1, t0;\n\t"
+		"@%p add.cc.u64   %0, %0, %2;\n\t" //if carry-flag set, addend = addend + augend + maxMod - 2^64
+		"addc.u32          t0, 0, 0;\n\t"
+		"setp.eq.u32       %p, 1, t0;\n\t"
+		"@%p add.cc.u64   %0, %0, %2;\n\t" //if carry-flag set, addend = addend + augnend + 2*maxMod - 2^65
+		"}"
+		: "=l"(addend)
+		: "l"(augend), "l"(maxMod));
 }
 
 //leverages a machine instruction that returns the highest 64 bits of the multiplication operation
 //multiplicand and multiplier should always be less than mod (may work correctly even if this is not the case)
 //maxMod is constant with respect to each mod, therefore best place to calculate is in modExp functions
-__device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, const INT_64 mod, const INT_64 maxMod, INT_64* output) {
+__device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, const INT_64 & mod, const INT_64 & maxMod, INT_64* output) {
 	INT_64 hi, result, lo;
 	//INT_64	hi = __umul64hi(multiplicand, multiplier);
 	//INT_64 result = (multiplicand * multiplier) % mod;
 	multiply64ResultU128(multiplicand, multiplier, &result, &hi);
-	if (result >= mod) result %= mod;
+	//if (result >= mod) result %= mod;
 	while (hi) {
-		//INT_64 lo = hi * maxMod;
 
 		multiply64ResultU128(hi, maxMod, &lo, &hi);
-		//multiplyModCond should be (2^64)/(number of loop iterations)
-		//where loop iterations are roughly 64/(64 - log2(mod))
-		//THEREFORE THIS SHOULD NOT BE A COMPILE TIME CONSTANT
-		//but a runtime variable set at launch based upon the maximum mod that will be passed to this function
-		//for 2^40 number of loops is 2, for 2^50 number of loops is 4
-		if (lo >= multiplyModCond) lo %= mod;
 
-		result += lo;
-		//hi = __umul64hi(hi, maxMod);
+		//ha! no more modulus in the loop!
+		addWithCarryConvertedToMod(result, lo, maxMod);
 	}
 	if(result >= mod) result %= mod;
 	*output = result;
@@ -351,7 +363,7 @@ __device__ void modExp(unsigned long long base, long exp, long mod, long *output
 //this version allows base to be constant, thus reducing total number of moduli which must be calculated
 //geometric mean of multiplication inputs is also substantially lower, allowing faster average multiplications
 //experimented with placing forceinline and noinline on various functions, noinline here had the biggest improvement, no idea why
-__device__ __noinline__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE highestBitMask, TYPE* output) {
+__device__ __noinline__ void modExpLeftToRight(const TYPE & exp, const TYPE & mod, TYPE highestBitMask, TYPE* output) {
 
 	if (!exp) {
 		//no need to set output to anything as it is already 1
@@ -386,7 +398,7 @@ __device__ __noinline__ void modExpLeftToRight(const TYPE exp, TYPE mod, TYPE hi
 }
 
 //find ( baseSystem^n % mod ) / mod and add to partialSum
-__device__ void fractionalPartOfSum(TYPE exp, TYPE mod, double *partialSum, TYPE highestBitMask, int negative) {
+__device__ void fractionalPartOfSum(const TYPE & exp, const TYPE & mod, double *partialSum, TYPE highestBitMask, const int & negative) {
 	TYPE expModResult = 1;
 	modExpLeftToRight(exp, mod, highestBitMask, &expModResult);
 	double sumTerm = (((double)expModResult) / ((double)mod));
