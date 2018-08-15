@@ -212,24 +212,58 @@ __device__ void modMultiplyRightToLeft(INT_64 multiplicand, INT_64 multiplier, I
 	*output = result;
 }
 
+//gets the hi and lo of a 64 bit multiply using 32 bit registers
+//is slightly more than 2.5% faster than doing __umul64hi(multiplier, multiplicand) and multiplier * multiplicand separately
+//is it worth completely throwing away all read-ability for performance? yes
+__device__ void multiply64ResultU128(INT_64 multiplicand, INT_64 multiplier, INT_64 * lo, INT_64 * hi) {
+	
+	//a : multiplicand
+	//b : multiplier
+	//lo : low 32 bits of result
+	//hi : high 32 bits of result
+	asm("{\n\t"
+		".reg .u32       t0, t1, t2, t3, v0, v1, v2, v3;\n\t"
+		"mov.b64         {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
+		"mov.b64         {v2, v3}, %3;\n\t" //splits b into hi and lo 32 bit words
+		"mul.lo.u32      t0, v0, v2;    \n\t" //lolo = lo(alo*blo)
+		"mul.hi.u32      t1, v0, v2;    \n\t" //lohi = hi(alo*blo)
+		"mad.lo.cc.u32   t1, v0, v3, t1;\n\t" //lohi = lo(alo*bhi) + hi(alo*blo) (with carry flag)
+		"madc.hi.cc.u32     t2, v0, v3,  0;\n\t" //hilo = hi(alo*bhi) + 1 carry (with carry flag, as carry may need to propagate)
+		"madc.hi.u32     t3, v1, v3,  0;\n\t" //hihi = hi(ahi*bhi) + 1 carry (no need to set carry)
+		"mad.lo.cc.u32   t1, v1, v2, t1;\n\t" //lohi = lo(ahi*blo) + lo(alo*bhi) + hi(alo*blo) (with carry flag)
+		"madc.hi.cc.u32  t2, v1, v2, t2;\n\t" //hilo = hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
+		"addc.u32        t3, t3, 0;\n\t" //hihi = hi(ahi*bhi) + 2 carries (no need to set carry)
+		"mad.lo.cc.u32   t2, v1, v3, t2;\n\t" //hilo = lo(ahi*bhi) + hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
+		"addc.u32        t3, t3, 0;\n\t" //hihi = hi(ahi*bhi) + 3 carries
+		"mov.b64         %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
+		"mov.b64         %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		"}"
+		: "=l"(*lo), "=l"(*hi)//"=r"(lolo), "=r"(lohi), "=r"(hilo), "=r"(hihi)
+		: "l"(multiplicand), "l"(multiplier));
+}
+
 //leverages a machine instruction that returns the highest 64 bits of the multiplication operation
 //multiplicand and multiplier should always be less than mod (may work correctly even if this is not the case)
 //maxMod is constant with respect to each mod, therefore best place to calculate is in modExp functions
-__device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, INT_64 maxMod, INT_64* output) {
-	INT_64	hi = __umul64hi(multiplicand, multiplier);
-	INT_64 result = (multiplicand * multiplier) % mod;
+__device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, const INT_64 mod, const INT_64 maxMod, INT_64* output) {
+	INT_64 hi, result, lo;
+	//INT_64	hi = __umul64hi(multiplicand, multiplier);
+	//INT_64 result = (multiplicand * multiplier) % mod;
+	multiply64ResultU128(multiplicand, multiplier, &result, &hi);
+	if (result >= mod) result %= mod;
 	while (hi) {
-		INT_64 lo = hi * maxMod;
+		//INT_64 lo = hi * maxMod;
 
+		multiply64ResultU128(hi, maxMod, &lo, &hi);
 		//multiplyModCond should be (2^64)/(number of loop iterations)
 		//where loop iterations are roughly 64/(64 - log2(mod))
 		//THEREFORE THIS SHOULD NOT BE A COMPILE TIME CONSTANT
 		//but a runtime variable set at launch based upon the maximum mod that will be passed to this function
 		//for 2^40 number of loops is 2, for 2^50 number of loops is 4
-		if (lo > multiplyModCond) lo %= mod;
+		if (lo >= multiplyModCond) lo %= mod;
 
-		result +=  lo;
-		hi = __umul64hi(hi, maxMod);
+		result += lo;
+		//hi = __umul64hi(hi, maxMod);
 	}
 	if(result >= mod) result %= mod;
 	*output = result;
@@ -479,7 +513,7 @@ long finalizeDigit(sJ input, TYPE n) {
 	return (long)hexDigit;
 }
 
-long finalizeDigitAlt(sJ input, TYPE n) {
+INT_64 finalizeDigitAlt(sJ input, TYPE n) {
 	double reducer = 1.0;
 
 	//unfortunately 64 is not a power of 16, so if n is < 2
@@ -546,14 +580,14 @@ long finalizeDigitAlt(sJ input, TYPE n) {
 	for (int i = 0; i < loopLimit; i++) hexDigit *= 4.0;
 	hexDigit = modf(hexDigit, &trash);
 
-	//shift left by 5 hex digits
-	hexDigit *= 16.0*16.0*16.0*16.0*16.0;
+	//shift left by 8 hex digits
+	for (int i = 0; i < 12; i++) hexDigit *= 16.0;
 	printf("hexDigit = %.8f\n", hexDigit);
-	return (long)hexDigit;
+	return (INT_64)hexDigit;
 }
 
 void checkForProgressCache(INT_64 digit, INT_64 * contFrom, sJ * cache, double * previousTime) {
-	std::string target = "digit" + std::to_string(digit);
+	std::string target = "digit" + std::to_string(digit) + "Base";
 	std::string pToFile;
 	int found = 0;
 	for (auto& element : std::experimental::filesystem::directory_iterator("progressCache")) {
@@ -596,7 +630,7 @@ void checkForProgressCache(INT_64 digit, INT_64 * contFrom, sJ * cache, double *
 					file >> std::hexfloat >> cache->s10k9;
 				}
 				catch(std::ifstream::failure& e) {
-					fprintf(stderr, "Error opening file %s\n", pToFile);
+					fprintf(stderr, "Error opening file %s\n", pToFile.c_str());
 					fprintf(stderr, "%s\n", e.what());
 					std::cout << "Could not reload cache. Beginning computation without reloading." << std::endl;
 				}
@@ -689,7 +723,7 @@ int main()
 			WaitForSingleObject(handles[i], INFINITE);
 			CloseHandle(handles[i]);
 
-			cudaError_t cudaStatus = gpuData[i].error;
+			cudaStatus = gpuData[i].error;
 			if (cudaStatus != cudaSuccess) {
 				fprintf(stderr, "cudaBbpLaunch failed on gpu%d!\n", i);
 				return 1;
@@ -709,11 +743,11 @@ int main()
 
 		free(prog);
 
-		long hexDigit = finalizeDigitAlt(cudaResult, hexDigitPosition);
+		INT_64 hexDigit = finalizeDigitAlt(cudaResult, hexDigitPosition);
 
 		clock_t end = clock();
 
-		printf("pi at hexadecimal digit %llu is %05X\n",
+		printf("pi at hexadecimal digit %llu is %012llX\n",
 			hexDigitPosition + 1, hexDigit);
 
 		printf("Computed in %.8f seconds\n", previousTime + ((double)(end - start) / (double) CLOCKS_PER_SEC));
@@ -723,7 +757,6 @@ int main()
 		cudaStatus = cudaDeviceReset();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaDeviceReset failed!");
-			return 1;
 		}
 
 		return 0;
@@ -815,7 +848,7 @@ DWORD WINAPI progressCheck(LPVOID data) {
 
 				double savedProgress = (double) (contProcess - 1LLU) / (double)progP->maxProgress;
 
-				snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%02.6f.dat", progP->maxProgress, 100.0*savedProgress);
+				snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%09.6f.dat", progP->maxProgress, 100.0*savedProgress);
 
 				//would like to do this with ofstream and std::hexfloat
 				//but msvc is a microsoft product so...
