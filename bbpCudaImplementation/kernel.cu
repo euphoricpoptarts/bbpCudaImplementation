@@ -29,8 +29,6 @@ __device__  __constant__ const int baseExpOf2 = 10;
 
 __device__ const int typeSize = sizeof(TYPE) * 8 - 1;
 __device__ const TYPE multiplyModCond = 0x4000000000000000;//2^62
-														   //__device__ const int int64Size = sizeof(INT_64) * 8 - 1;
-__device__ const INT_64 int64ModCond = 0x40000000;
 __device__  __constant__ const INT_64 int64MaxBit = 0x8000000000000000;
 
 __device__ int printOnce = 0;
@@ -212,39 +210,68 @@ __device__ void modMultiplyRightToLeft(INT_64 multiplicand, INT_64 multiplier, I
 	*output = result;
 }
 
-//gets the hi and lo of a 64 bit multiply using 32 bit registers
-//is slightly more than 2.5% faster than doing __umul64hi(multiplier, multiplicand) and multiplier * multiplicand separately
-//is it worth completely throwing away all read-ability for performance? yes
-__device__ void multiply64ResultU128(INT_64 multiplicand, INT_64 multiplier, INT_64 * lo, INT_64 * hi) {
+//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
+//adds the results to the contents of lo
+//basically a 128 bit mad with 64 bit inputs
+__device__ void multiply64By64PlusLo(INT_64 multiplicand, INT_64 multiplier, INT_64 * lo, INT_64 * hi) {
 	
 	//a : multiplicand
 	//b : multiplier
-	//lo : low 32 bits of result
-	//hi : high 32 bits of result
+	//_lo : low 32 bits of result
+	//_hi : high 32 bits of result
 	asm("{\n\t"
-		".reg .u32       t0, t1, t2, t3, v0, v1, v2, v3;\n\t"
-		"mov.b64         {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
-		"mov.b64         {v2, v3}, %3;\n\t" //splits b into hi and lo 32 bit words
-		"mul.lo.u32      t0, v0, v2;    \n\t" //lolo = lo(alo*blo)
-		"mul.hi.u32      t1, v0, v2;    \n\t" //lohi = hi(alo*blo)
-		"mad.lo.cc.u32   t1, v0, v3, t1;\n\t" //lohi = lo(alo*bhi) + hi(alo*blo) (with carry flag)
+		".reg .u32          t0, t1, t2, t3, v0, v1, v2, v3;\n\t"
+		"mov.b64           {t0, t1}, %4;\n\t" //splits lo into t0 and t1
+		"mov.b64           {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
+		"mov.b64           {v2, v3}, %3;\n\t" //splits b into hi and lo 32 bit words
+		"mad.lo.cc.u32      t0, v0, v2, t0;\n\t" //lolo = starting_value + lo(alo*blo) (with carry flag)
+		"madc.hi.cc.u32     t1, v0, v2, t1;\n\t" //lohi = starting_value + hi(alo*blo) + 1 carry (with carry flag)
 		"madc.hi.cc.u32     t2, v0, v3,  0;\n\t" //hilo = hi(alo*bhi) + 1 carry (with carry flag, as carry may need to propagate)
-		"madc.hi.u32     t3, v1, v3,  0;\n\t" //hihi = hi(ahi*bhi) + 1 carry (no need to set carry)
-		"mad.lo.cc.u32   t1, v1, v2, t1;\n\t" //lohi = lo(ahi*blo) + lo(alo*bhi) + hi(alo*blo) (with carry flag)
-		"madc.hi.cc.u32  t2, v1, v2, t2;\n\t" //hilo = hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
-		"addc.u32        t3, t3, 0;\n\t" //hihi = hi(ahi*bhi) + 2 carries (no need to set carry)
-		"mad.lo.cc.u32   t2, v1, v3, t2;\n\t" //hilo = lo(ahi*bhi) + hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
-		"addc.u32        t3, t3, 0;\n\t" //hihi = hi(ahi*bhi) + 3 carries
-		"mov.b64         %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
-		"mov.b64         %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		"madc.hi.u32        t3, v1, v3,  0;\n\t" //hihi = hi(ahi*bhi) + 1 carry (no need to set carry)
+		"mad.lo.cc.u32      t1, v0, v3, t1;\n\t" //lohi = starting_value + lo(alo*bhi) + hi(alo*blo) + 1 carry (with carry flag)
+		"madc.hi.cc.u32     t2, v1, v2, t2;\n\t" //hilo = hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
+		"addc.u32           t3, t3, 0;\n\t" //hihi = hi(ahi*bhi) + 2 carries (no need to set carry)
+		"mad.lo.cc.u32      t1, v1, v2, t1;\n\t" //lohi = starting_value + lo(ahi*blo) + lo(alo*bhi) + hi(alo*blo) + 1 carry (with carry flag)
+		"madc.lo.cc.u32     t2, v1, v3, t2;\n\t" //hilo = lo(ahi*bhi) + hi(ahi*blo) + hi(alo*bhi) + 3 carries (with carry flag)
+		"addc.u32           t3, t3, 0;\n\t" //hihi = hi(ahi*bhi) + 3 carries
+		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
+		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
 		"}"
 		: "=l"(*lo), "=l"(*hi)
-		: "l"(multiplicand), "l"(multiplier));
+		: "l"(multiplicand), "l"(multiplier), "l"(*lo));
+}
+
+//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying a 32 and 64 bit number together
+//adds the results to the contents of lo
+__device__ void multiply32By64PlusLo(INT_64 multiplicand, INT_64 multiplier, INT_64 * lo, INT_64 * hi) {
+
+	//a : multiplicand
+	//b : multiplier
+	//_lo : low 32 bits of result
+	//_hi : high 32 bits of result
+	asm("{\n\t"
+		".reg .u32          t0, t1, t2, t3, v0, v1, v2, v3;\n\t"
+		"mov.b64           {t0, t1}, %4;\n\t" //splits lo into t0 and t1
+		"mov.b64           {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words (although a has no high bits set, we just won't use v1)
+		"mov.b64           {v2, v3}, %3;\n\t" //splits b into hi and lo 32 bit words
+		"mad.lo.cc.u32      t0, v0, v2, t0;\n\t" //lolo = starting_value + lo(alo*blo) (with carry flag)
+		"madc.hi.cc.u32     t1, v0, v2, t1;\n\t" //lohi = starting_value + hi(alo*blo) + 1 carry (with carry flag)
+		"madc.hi.cc.u32     t2, v0, v3,  0;\n\t" //hilo = hi(alo*bhi) + 1 carry (with carry flag, as carry may need to propagate)
+		"mad.lo.cc.u32      t1, v0, v3, t1;\n\t" //lohi = starting_value + lo(alo*bhi) + hi(alo*blo) + 1 carry (with carry flag)
+		"addc.cc.u32           t2, t2, 0;\n\t" //hilo = hi(alo*bhi) + 2 carries (with carry flag, as carry may need to propagate)
+		"addc.u32           t3, 0, 0;\n\t" //just incase the last line produced a carry
+		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
+		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		"}"
+		: "=l"(*lo), "=l"(*hi)
+		: "l"(multiplicand), "l"(multiplier), "l"(*lo));
 }
 
 //adds augend to addend
 //if an overflow is detected, add maxMod to augend
 //if that overflows, add it again (as long as the mod for which maxMod is defined is < 2^63, this can't overflow)
+//this function allows the program to avoid calculating any modulus operations in modMultiply64Bit except once at the end
+//doing this saves anywhere from 25-40% of runtime (with larger savings coming from larger digit calculations)
 __device__ void addWithCarryConvertedToMod(INT_64 & addend, const INT_64 & augend, const INT_64 & maxMod) {
 	asm("{\n\t"
 		".reg .u32         t0;\n\t"
@@ -255,27 +282,22 @@ __device__ void addWithCarryConvertedToMod(INT_64 & addend, const INT_64 & augen
 		"@%p add.cc.u64   %0, %0, %2;\n\t" //if carry-flag set, addend = addend + augend + maxMod - 2^64
 		"addc.u32          t0, 0, 0;\n\t"
 		"setp.eq.u32       %p, 1, t0;\n\t"
-		"@%p add.cc.u64   %0, %0, %2;\n\t" //if carry-flag set, addend = addend + augnend + 2*maxMod - 2^65
+		"@%p add.cc.u64   %0, %0, %2;\n\t" //if carry-flag set, addend = addend + augend + 2*maxMod - 2^65
 		"}"
 		: "=l"(addend)
 		: "l"(augend), "l"(maxMod));
 }
 
-//leverages a machine instruction that returns the highest 64 bits of the multiplication operation
-//multiplicand and multiplier should always be less than mod (may work correctly even if this is not the case)
+//calculates the 128 bit product of multiplicand and multiplier
+//takes the highest 64 bits and multiplies it by maxMod (2^64 % mod) and adds it to the low 64 bits, repeating until the highest 64 bits are zero
+//this takes (log2(mod)) / (64 - log2(mod)) steps
 //maxMod is constant with respect to each mod, therefore best place to calculate is in modExp functions
 __device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, const INT_64 & mod, const INT_64 & maxMod, INT_64* output) {
-	INT_64 hi, result, lo;
-	//INT_64	hi = __umul64hi(multiplicand, multiplier);
-	//INT_64 result = (multiplicand * multiplier) % mod;
-	multiply64ResultU128(multiplicand, multiplier, &result, &hi);
-	//if (result >= mod) result %= mod;
+	INT_64 hi = 0, result = 0;// , lo;
+	multiply64By64PlusLo(multiplicand, multiplier, &result, &hi);
 	while (hi) {
-
-		multiply64ResultU128(hi, maxMod, &lo, &hi);
-
-		//ha! no more modulus in the loop!
-		addWithCarryConvertedToMod(result, lo, maxMod);
+		if(hi > 0xFFFFFFFF) multiply64By64PlusLo(hi, maxMod, &result, &hi);
+		else multiply32By64PlusLo(hi, maxMod, &result, &hi);
 	}
 	if(result >= mod) result %= mod;
 	*output = result;
@@ -358,10 +380,123 @@ __device__ void modExp(unsigned long long base, long exp, long mod, long *output
 	*output = result;
 }
 
+//greatest common denominator method pulled unmodified from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
+
+/* C program implementing the extended binary GCD algorithm. C.f.
+http://www.ucl.ac.uk/~ucahcjm/combopt/ext_gcd_python_programs.pdf. This
+is a modification of that routine in that we find s and t s.t.
+gcd(a, b) = s*a - t*b,
+rather than the same expression except with a + sign.
+This routine has been greatly simplified to take advantage of the
+facts that in the MM use, argument a is a power of 2, and b is odd. Thus
+there are no common powers of 2 to eliminate in the beginning. The
+parent routine has two loops. The first drives down argument a until it
+is 1, modifying u and v in the process. The second loop modifies s and
+t, but because a = 1 on entry to the second loop, it can be easily seen
+that the second loop doesn't alter u or v. Hence the result we want is u
+and v from the end of the first loop, and we can delete the second loop.
+The intermediate and final results are always > 0, so there is no
+trouble with negative quantities. Must have a either 0 or a power of 2
+<= 2**63. A value of 0 for a is treated as 2**64. b can be any 64-bit
+value.
+Parameter a is half what it "should" be. In other words, this function
+does not find u and v st. u*a - v*b = 1, but rather u*(2a) - v*b = 1. */
+
+__device__ void xbinGCD(INT_64 a, INT_64 b, INT_64 *pu, INT_64 *pv)
+{
+	INT_64 alpha, beta, u, v;
+	//printf("Doing GCD(%llx, %llx)\n", a, b);
+
+	u = 1; v = 0;
+	alpha = a; beta = b;         // Note that alpha is
+								 // even and beta is odd.
+
+								 /* The invariant maintained from here on is:
+								 2a = u*2*alpha - v*beta. */
+
+								 // printf("Before, a u v = %016llx %016llx %016llx\n", a, u, v);
+	while (a > 0) {
+		a = a >> 1;
+		if ((u & 1) == 0) {             // Delete a common
+			u = u >> 1; v = v >> 1;      // factor of 2 in
+		}                               // u and v.
+		else {
+			/* We want to set u = (u + beta) >> 1, but
+			that can overflow, so we use Dietz's method. */
+			u = ((u ^ beta) >> 1) + (u & beta);
+			v = (v >> 1) + alpha;
+		}
+		//    printf("After,  a u v = %016llx %016llx %016llx\n", a, u, v);
+	}
+
+	// printf("At end,    a u v = %016llx %016llx %016llx\n", a, u, v);
+	*pu = u;
+	*pv = v;
+	return;
+}
+
+
+//montgomery multiplication method from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
+//slightly modified to use more efficient 64 bit multiply-adds in PTX assembly
+__device__ void montgomeryMult(INT_64 abar, INT_64 bbar, INT_64 mod, INT_64 mprime, INT_64 * output) {
+
+	INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, tmmlo = 0, uhi = 0, ulo = 0, ov = 0;
+
+	//printf("\nmontmul, abar = %016llx, bbar   = %016llx\n", abar, bbar);
+	//printf("            m = %016llx, mprime = %016llx\n", m, mprime);
+
+	/* t = abar*bbar. */
+
+	//mulul64(abar, bbar, &thi, &tlo);  // t = abar*bbar.
+	multiply64By64PlusLo(abar, bbar, &tlo, &thi);
+	//printf("montmul, thi = %016llx, tlo = %016llx\n", thi, tlo);
+
+	/* Now compute u = (t + ((t*mprime) & mask)*m) >> 64.
+	The mask is fixed at 2**64-1. Because it is a 64-bit
+	quantity, it suffices to compute the low-order 64
+	bits of t*mprime, which means we can ignore thi. */
+
+	tm = tlo * mprime;
+	//printf("montmul, tm = %016llx\n", tm);
+
+	//mulul64(tm, m, &tmmhi, &tmmlo);   // tmm = tm*m.
+	//INT_64 thiTemp;
+	
+	//there is an optimization to be made here, tm = lo64(tlo * mprime)
+	//so tm * mod = lo64(tlo * mprime) * mod
+	//but mprime*mod is constant for a given mod
+	//is there a way to reduce the amount of work from this?
+	multiply64By64PlusLo(tm, mod, &tlo, &tmmhi);
+	//printf("montmul, tmmhi = %016llx, tmmlo = %016llx\n", tmmhi, tmmlo);
+
+	//ulo = tlo + tmmlo;                // Add t to tmm
+	uhi = thi + tmmhi;                // (128-bit add).
+	//if (ulo < tlo) uhi = uhi + 1;     // Allow for a carry.
+
+									  // The above addition can overflow. Detect that here.
+
+	ov = (uhi < thi);// | ((uhi == thi) & (ulo < tlo));
+	//printf("montmul, sum, uhi = %016llx, ulo = %016llx, ov = %lld\n", uhi, ulo, ov);
+
+	ulo = uhi;                   // Shift u right
+	//why bother? uhi = 0;                     // 64 bit positions.
+	//printf("montmul, ulo = %016llx\n", ulo);
+
+	// if (ov > 0 || ulo >= m)      // If u >= m,
+	//    ulo = ulo - m;            // subtract m from u.
+	ulo = ulo - (mod & -(ov | (ulo >= mod))); // Alternative
+										  // with no branching.
+	//printf("montmul, final ulo = %016llx\n", ulo);
+
+	//if (ulo >= m)
+		//printf("ERROR in montmul, ulo = %016llx, m = %016llx\n", ulo, m);
+	*output = ulo;
+}
+
 //using left-to-right binary exponentiation
 //the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
-//this version allows base to be constant, thus reducing total number of moduli which must be calculated
-//geometric mean of multiplication inputs is also substantially lower, allowing faster average multiplications
+//uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
+//montgomery multiplication suggested by njuffa
 //experimented with placing forceinline and noinline on various functions, noinline here had the biggest improvement, no idea why
 __device__ __noinline__ void modExpLeftToRight(const TYPE & exp, const TYPE & mod, TYPE highestBitMask, TYPE* output) {
 
@@ -370,29 +505,44 @@ __device__ __noinline__ void modExpLeftToRight(const TYPE & exp, const TYPE & mo
 		return;
 	}
 
-	INT_64 result = baseSystem;
+	INT_64 rInverse, mPrime;
+
+	//finds rInverse*2^64 - mPrime*mod = 1
+	xbinGCD(int64MaxBit, mod, &rInverse, &mPrime);
+
+	INT_64 result;
 
 	INT_64 maxMod = int64MaxBit % mod;
 
 	maxMod <<= 1;
 
-	if (maxMod > mod) maxMod %= mod;
+	if (maxMod > mod) maxMod -= mod;
+
+	//baseSystem*2^64 % mod
+	modMultiply64Bit(maxMod, baseSystem, mod, maxMod, &result);
+
+	//save this to use in loop
+	INT_64 baseBar = result;
 
 	while (highestBitMask > 1) {
 		
 		//modMultiply expect inputs to be less than mod
-		if (result >= mod) result %= mod;
+		//if (result >= mod) result %= mod;
 
-
-		modMultiply64Bit(result, result, mod, maxMod, &result);//result^2
+		montgomeryMult(result, result, mod, mPrime, &result);
+		//modMultiply64Bit(result, result, mod, maxMod, &result);//result^2
 		//modSquare64Bit(output, mod, maxMod);//result^2
 
 		highestBitMask >>= 1;
-		if (exp&highestBitMask)	result <<= baseExpOf2;//result * base
+		//if (exp&highestBitMask)	result <<= baseExpOf2;//result * base
+		if (exp&highestBitMask) montgomeryMult(result, baseBar, mod, mPrime, &result);
 	}
 
 	//modulus may need to be taken after loop as it hasn't necessarily been taken during last loop iteration
-	result %= mod;
+	//result %= mod;
+
+	//convert result out of montgomery form
+	modMultiply64Bit(result, rInverse, mod, maxMod, &result);
 
 	*output = result;
 }
