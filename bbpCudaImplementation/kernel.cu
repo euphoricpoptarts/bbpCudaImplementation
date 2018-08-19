@@ -7,6 +7,7 @@
 #include <math.h>
 #include <time.h>
 #include <Windows.h>
+#include <thread>
 #include <deque>
 #include <atomic>
 #include <fstream>
@@ -25,7 +26,7 @@ const int threadCountPerBlock = 128;
 const int blockCount = 560;
 
 __device__ __constant__ const TYPE baseSystem = 1024;
-__device__  __constant__ const int baseExpOf2 = 10;
+//__device__  __constant__ const int baseExpOf2 = 10;
 
 __device__ const int typeSize = sizeof(TYPE) * 8 - 1;
 __device__ const TYPE multiplyModCond = 0x4000000000000000;//2^62
@@ -67,8 +68,8 @@ typedef struct {
 } BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
 
 PPROGRESSDATA setupProgress();
-DWORD WINAPI progressCheck(LPVOID data);
-DWORD WINAPI cudaBbpLauncher(LPVOID dataV);
+void progressCheck(PPROGRESSDATA data);
+void cudaBbpLauncher(PBBPLAUNCHERDATA dataV);
 
 //adds all elements of addend and augend, storing in addend
 __device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
@@ -476,7 +477,8 @@ __device__ void xbinGCD(INT_64 a, INT_64 b, INT_64 *pu, INT_64 *pv)
 //slightly modified to use more efficient 64 bit multiply-adds in PTX assembly
 __device__ void montgomeryMult(INT_64 abar, INT_64 bbar, INT_64 mod, INT_64 mprime, INT_64 & output) {
 
-	INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, tmmlo = 0, uhi = 0, ulo = 0, ov = 0;
+	INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, uhi = 0;
+	//INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, tmmlo = 0, uhi = 0, ulo = 0, ov = 0;
 
 	//printf("\nmontmul, abar = %016llx, bbar   = %016llx\n", abar, bbar);
 	//printf("            m = %016llx, mprime = %016llx\n", m, mprime);
@@ -861,7 +863,7 @@ int main()
 		double previousTime = 0.0;
 		checkForProgressCache(sumEnd, &beginFrom, &cudaResult, &previousTime);
 
-		HANDLE handles[totalGpus];
+		std::thread handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];
 
 		clock_t start = clock();
@@ -874,12 +876,7 @@ int main()
 		prog->previousCache = cudaResult;
 		prog->previousTime = previousTime;
 
-		HANDLE progThread = CreateThread(NULL, 0, *progressCheck, (LPVOID)prog, 0, NULL);
-
-		if (progThread == NULL) {
-			fprintf(stderr, "progressCheck thread creation failed\n");
-			return 1;
-		}
+		std::thread progThread(progressCheck, prog);
 
 		for (int i = 0; i < totalGpus; i++) {
 
@@ -893,21 +890,14 @@ int main()
 			gpuData[i].nextStrideBegin = &(prog->nextStrideBegin[i]);
 			gpuData[i].beginFrom = beginFrom;
 
-
-			handles[i] = CreateThread(NULL, 0, *cudaBbpLauncher, (LPVOID)&(gpuData[i]), 0, NULL);
-
-			if (handles[i] == NULL) {
-				fprintf(stderr, "gpu%dThread failed to launch\n", i);
-				return 1;
-			}
+			handles[i] = std::thread(cudaBbpLauncher, &(gpuData[i]));
 		}
 
 		cudaError_t cudaStatus;
 
 		for (int i = 0; i < totalGpus; i++) {
 
-			WaitForSingleObject(handles[i], INFINITE);
-			CloseHandle(handles[i]);
+			handles[i].join();
 
 			cudaStatus = gpuData[i].error;
 			if (cudaStatus != cudaSuccess) {
@@ -924,8 +914,7 @@ int main()
 		//tell the progress thread to quit
 		prog->quit = 1;
 
-		WaitForSingleObject(progThread, INFINITE);
-		CloseHandle(progThread);
+		progThread.join();
 
 		free(prog);
 
@@ -992,8 +981,7 @@ PPROGRESSDATA setupProgress() {
 }
 
 //this function is meant to be run by an independent thread to output progress to the console
-DWORD WINAPI progressCheck(LPVOID data) {
-	PPROGRESSDATA progP = (PPROGRESSDATA)data;
+void progressCheck(PPROGRESSDATA progP) {
 
 	double lastProgress = 0;
 
@@ -1074,13 +1062,11 @@ DWORD WINAPI progressCheck(LPVOID data) {
 
 		Sleep(10);
 	}
-	return 0;
 }
 
 // Helper function for using CUDA
-DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, unsigned int size, TYPE digit)
+void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output, unsigned int size, TYPE digit)
 {
-	PBBPLAUNCHERDATA data = (PBBPLAUNCHERDATA)dataV;
 	int size = data->size;
 	int gpu = data->gpu;
 	int totalGpus = data->totalGpus;
@@ -1091,6 +1077,8 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 	sJ *dev_ex = 0;
 
 	cudaError_t cudaStatus;
+	
+	INT_64 stride, launchWidth, neededLaunches;
 
 	// Choose which GPU to run on, change this on a multi-GPU system.
 	cudaStatus = cudaSetDevice(gpu);
@@ -1113,14 +1101,14 @@ DWORD WINAPI cudaBbpLauncher(LPVOID dataV)//cudaError_t addWithCuda(sJ *output, 
 		goto Error;
 	}
 
-	INT_64 stride =  (INT_64) size * (INT_64) totalGpus;
+	stride =  (INT_64) size * (INT_64) totalGpus;
 
-	INT_64 launchWidth = stride * 64LLU;
+	launchWidth = stride * 64LLU;
 
 	//need to round up
 	//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
 	//even when digit/launchWidth is an integer, it is necessary to add 1
-	INT_64 neededLaunches = ((digit - data->beginFrom) / launchWidth) + 1LLU;
+	neededLaunches = ((digit - data->beginFrom) / launchWidth) + 1LLU;
 
 	for (INT_64 launch = 0; launch < neededLaunches; launch++) {
 
@@ -1199,5 +1187,4 @@ Error:
 	cudaFree(dev_ex);
 
 	(*data).error = cudaStatus;
-	return 0;
 }
