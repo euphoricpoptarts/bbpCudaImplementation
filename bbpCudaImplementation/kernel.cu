@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <time.h>
-#include <Windows.h>
+#include <chrono>
 #include <thread>
 #include <deque>
 #include <atomic>
@@ -594,19 +594,20 @@ __device__ void bbp(uint64 n, uint64 start, uint64 end, int gridId, uint64 strid
 	for (uint64 k = start; k <= end; k += stride) {
 		while (highestExpBit > (n - k))  highestExpBit >>= 1;
 		uint64 mod = 4 * k + 1;
-		fractionalPartOfSum(n - k, mod, &((*output).s4k1), highestExpBit, k & 1);
+		uint64 exp = n - k;
+		fractionalPartOfSum(exp, mod, &(output->s4k1), highestExpBit, k & 1);
 		mod += 2;//4k + 3
-		fractionalPartOfSum(n - k, mod, &((*output).s4k3), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s4k3), highestExpBit, k & 1);
 		mod = 10 * k + 1;
-		fractionalPartOfSum(n - k, mod, &((*output).s10k1), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s10k1), highestExpBit, k & 1);
 		mod += 2;//10k + 3
-		fractionalPartOfSum(n - k, mod, &((*output).s10k3), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s10k3), highestExpBit, k & 1);
 		mod += 2;//10k + 5
-		fractionalPartOfSum(n - k, mod, &((*output).s10k5), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s10k5), highestExpBit, k & 1);
 		mod += 2;//10k + 7
-		fractionalPartOfSum(n - k, mod, &((*output).s10k7), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s10k7), highestExpBit, k & 1);
 		mod += 2;//10k + 9
-		fractionalPartOfSum(n - k, mod, &((*output).s10k9), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s10k9), highestExpBit, k & 1);
 		if (!progressCheck) {
 			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
 			*progress = k;
@@ -1059,7 +1060,7 @@ void progressCheck(PPROGRESSDATA progP) {
 			}
 		}
 
-		Sleep(10);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 }
 
@@ -1162,7 +1163,7 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 		}
 
 		//give the rest of the computer some gpu time to reduce system choppiness
-		Sleep(1);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
 
 	cudaStatus = reduceSJ(dev_c, size);
