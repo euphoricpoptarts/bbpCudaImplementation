@@ -15,8 +15,7 @@
 #include <filesystem>
 #include <string>
 
-#define TYPE unsigned long long
-#define INT_64 unsigned long long
+#define uint64 unsigned long long
 
 const int totalGpus = 2;
 
@@ -25,12 +24,12 @@ const int threadCountPerBlock = 128;
 //this is more difficult to optimize but seems to not like odd numbers
 const int blockCount = 560;
 
-__device__ __constant__ const TYPE baseSystem = 1024;
+__device__ __constant__ const uint64 baseSystem = 1024;
 //__device__  __constant__ const int baseExpOf2 = 10;
 
-__device__ const int typeSize = sizeof(TYPE) * 8 - 1;
-__device__ const TYPE multiplyModCond = 0x4000000000000000;//2^62
-__device__  __constant__ const INT_64 int64MaxBit = 0x8000000000000000;
+__device__ const int typeSize = sizeof(uint64) * 8 - 1;
+__device__ const uint64 multiplyModCond = 0x4000000000000000;//2^62
+__device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
 
 __device__ int printOnce = 0;
 
@@ -40,13 +39,13 @@ struct sJ {
 };
 
 typedef struct {
-	volatile INT_64 *currentProgress;
-	volatile INT_64 *deviceProg;
+	volatile uint64 *currentProgress;
+	volatile uint64 *deviceProg;
 	sJ previousCache;
 	double previousTime;
 	sJ status[totalGpus];
-	volatile INT_64 nextStrideBegin[totalGpus];
-	TYPE maxProgress;
+	volatile uint64 nextStrideBegin[totalGpus];
+	uint64 maxProgress;
 	volatile int quit = 0;
 	cudaError_t error;
 	clock_t begin;
@@ -55,15 +54,15 @@ typedef struct {
 
 typedef struct {
 	sJ output;
-	INT_64 digit;
-	INT_64 beginFrom;
+	uint64 digit;
+	uint64 beginFrom;
 	int gpu = 0;
 	int totalGpus = 0;
 	int size = 0;
 	cudaError_t error;
-	volatile INT_64 *deviceProg;
+	volatile uint64 *deviceProg;
 	sJ * status;
-	volatile INT_64 * nextStrideBegin;
+	volatile uint64 * nextStrideBegin;
 	volatile std::atomic<int> * dataWritten;
 } BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
 
@@ -94,11 +93,11 @@ __device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
 }
 
 //not actually quick
-__device__ void quickMod(INT_64 input, const INT_64 mod, INT_64 *output) {
+__device__ void quickMod(uint64 input, const uint64 mod, uint64 *output) {
 
 	/*INT_64 copy = input;
 	INT_64 test = input % mod;*/
-	INT_64 temp = mod;
+	uint64 temp = mod;
 	while (temp < input && !(temp&int64MaxBit)) temp <<= 1;
 	if (temp > input) temp >>= 1;
 	while (input >= mod && temp >= mod) {
@@ -114,7 +113,7 @@ __device__ void quickMod(INT_64 input, const INT_64 mod, INT_64 *output) {
 }
 
 //binary search to find highest 1 bit in multiplier
-__device__ void findMultiplierHighestBit(const TYPE multiplier, TYPE *output) {
+__device__ void findMultiplierHighestBit(const uint64 multiplier, uint64 *output) {
 
 	//if no bits are 1 then highest bit doesn't exist
 	if (!multiplier) {
@@ -127,7 +126,7 @@ __device__ void findMultiplierHighestBit(const TYPE multiplier, TYPE *output) {
 
 	int middle = (highestBitLocMax + highestBitLocMin) >> 1;
 
-	TYPE highestBit = 1L;
+	uint64 highestBit = 1L;
 	highestBit <<= middle;
 
 	int less = highestBit <= multiplier;
@@ -157,7 +156,7 @@ __device__ void findMultiplierHighestBit(const TYPE multiplier, TYPE *output) {
 //hacker's delight method to find highest bit in a long long (it just works)
 //http://graphics.stanford.edu/~seander/bithacks.html
 //just barely faster than built-in CUDA __clzll
-__device__ void findMultiplierHighestBitHackersDelight(TYPE multiplier, TYPE *output) {
+__device__ void findMultiplierHighestBitHackersDelight(uint64 multiplier, uint64 *output) {
 
 	multiplier |= multiplier >> 1;
 	multiplier |= multiplier >> 2;
@@ -170,10 +169,10 @@ __device__ void findMultiplierHighestBitHackersDelight(TYPE multiplier, TYPE *ou
 
 }
 
-__device__ void modMultiplyLeftToRight(const TYPE multiplicand, const TYPE multiplier, TYPE mod, TYPE *output) {
+__device__ void modMultiplyLeftToRight(const uint64 multiplicand, const uint64 multiplier, uint64 mod, uint64 *output) {
 	*output = multiplicand;
 
-	TYPE highestBitMask = 0;
+	uint64 highestBitMask = 0;
 
 	findMultiplierHighestBitHackersDelight(multiplier, &highestBitMask);
 
@@ -189,10 +188,10 @@ __device__ void modMultiplyLeftToRight(const TYPE multiplicand, const TYPE multi
 	*output %= mod;
 }
 
-__device__ void modMultiplyRightToLeft(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, INT_64 *output) {
-	INT_64 result = 0;
+__device__ void modMultiplyRightToLeft(uint64 multiplicand, uint64 multiplier, uint64 mod, uint64 *output) {
+	uint64 result = 0;
 
-	INT_64 mask = 1;
+	uint64 mask = 1;
 
 	while (multiplier > 0) {
 		if (multiplier&mask) {
@@ -212,7 +211,7 @@ __device__ void modMultiplyRightToLeft(INT_64 multiplicand, INT_64 multiplier, I
 }
 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
-__device__ void multiply64By64(INT_64 multiplicand, INT_64 multiplier, INT_64 * lo, INT_64 * hi) {
+__device__ void multiply64By64(uint64 multiplicand, uint64 multiplier, uint64 * lo, uint64 * hi) {
 
 	//a : multiplicand
 	//b : multiplier
@@ -242,7 +241,7 @@ __device__ void multiply64By64(INT_64 multiplicand, INT_64 multiplier, INT_64 * 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
 //adds the results to the contents of lo
 //basically a 128 bit mad with 64 bit inputs
-__device__ void multiply64By64PlusLo(INT_64 multiplicand, INT_64 multiplier, INT_64 * lo, INT_64 * hi) {
+__device__ void multiply64By64PlusLo(uint64 multiplicand, uint64 multiplier, uint64 * lo, uint64 * hi) {
 	
 	//a : multiplicand
 	//b : multiplier
@@ -272,7 +271,7 @@ __device__ void multiply64By64PlusLo(INT_64 multiplicand, INT_64 multiplier, INT
 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying a 32 and 64 bit number together
 //adds the results to the contents of lo
-__device__ void multiply32By64PlusLo(INT_64 multiplicand, INT_64 multiplier, INT_64 * lo, INT_64 * hi) {
+__device__ void multiply32By64PlusLo(uint64 multiplicand, uint64 multiplier, uint64 * lo, uint64 * hi) {
 
 	//a : multiplicand
 	//b : multiplier
@@ -301,7 +300,7 @@ __device__ void multiply32By64PlusLo(INT_64 multiplicand, INT_64 multiplier, INT
 //if that overflows, add it again (as long as the mod for which maxMod is defined is < 2^63, this can't overflow)
 //this function allows the program to avoid calculating any modulus operations in modMultiply64Bit except once at the end
 //doing this saves anywhere from 25-40% of runtime (with larger savings coming from larger digit calculations)
-__device__ void addWithCarryConvertedToMod(INT_64 & addend, const INT_64 & augend, const INT_64 & maxMod) {
+__device__ void addWithCarryConvertedToMod(uint64 & addend, const uint64 & augend, const uint64 & maxMod) {
 	asm("{\n\t"
 		".reg .u32         t0;\n\t"
 		".reg .pred         %p;\n\t"
@@ -317,7 +316,7 @@ __device__ void addWithCarryConvertedToMod(INT_64 & addend, const INT_64 & augen
 		: "l"(augend), "l"(maxMod));
 }
 
-__device__ void multiplyAdd64Hi(const INT_64 & multiplicand, const INT_64 & multiplier, INT_64 * accumulate) {
+__device__ void multiplyAdd64Hi(const uint64 & multiplicand, const uint64 & multiplier, uint64 * accumulate) {
 	asm("{\n\t"
 		"mad.hi.u64          %0, %1, %2, %3;\n\t"
 		"}"
@@ -329,8 +328,8 @@ __device__ void multiplyAdd64Hi(const INT_64 & multiplicand, const INT_64 & mult
 //takes the highest 64 bits and multiplies it by maxMod (2^64 % mod) and adds it to the low 64 bits, repeating until the highest 64 bits are zero
 //this takes (log2(mod)) / (64 - log2(mod)) steps
 //maxMod is constant with respect to each mod, therefore best place to calculate is in modExp functions
-__device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, const INT_64 & mod, const INT_64 & maxMod, INT_64 & output) {
-	INT_64 hi = 0, result = 0;// , lo;
+__device__ void modMultiply64Bit(uint64 multiplicand, uint64 multiplier, const uint64 & mod, const uint64 & maxMod, uint64 & output) {
+	uint64 hi = 0, result = 0;// , lo;
 	multiply64By64PlusLo(multiplicand, multiplier, &result, &hi);
 	while (hi) {
 		if(hi > 0xFFFFFFFF) multiply64By64PlusLo(hi, maxMod, &result, &hi);
@@ -341,11 +340,11 @@ __device__ void modMultiply64Bit(INT_64 multiplicand, INT_64 multiplier, const I
 }
 
 //an experiment to see if reducing the number of arguments saves any time
-__device__ void modSquare64Bit(INT_64 *number, INT_64 mod, INT_64 maxMod) {
-	INT_64	hi = __umul64hi(*number, *number);
+__device__ void modSquare64Bit(uint64 *number, uint64 mod, uint64 maxMod) {
+	uint64	hi = __umul64hi(*number, *number);
 	*number = (*number * *number) % mod;
 	while (hi) {
-		INT_64 lo = hi * maxMod;
+		uint64 lo = hi * maxMod;
 
 		//multiplyModCond should be (2^64)/(number of loop iterations)
 		//where loop iterations are roughly 64/(64 - log2(mod))
@@ -365,9 +364,9 @@ __device__ void modSquare64Bit(INT_64 *number, INT_64 mod, INT_64 maxMod) {
 //uses bitshifts and subtraction to avoid multiplications and modulus respectively inside the loop
 //loops more times than other version
 //slower than other version (but could be faster if mod is close to 2^63)
-__device__ void modMultiply64BitAlt(INT_64 multiplicand, INT_64 multiplier, INT_64 mod, const int modMaxBitPos, INT_64 *output) {
-	INT_64	hi = __umul64hi(multiplicand, multiplier);
-	INT_64 result = (multiplicand * multiplier) % mod;
+__device__ void modMultiply64BitAlt(uint64 multiplicand, uint64 multiplier, uint64 mod, const int modMaxBitPos, uint64 *output) {
+	uint64	hi = __umul64hi(multiplicand, multiplier);
+	uint64 result = (multiplicand * multiplier) % mod;
 	int count = 64;
 	while (count > 0) {
 
@@ -439,9 +438,9 @@ value.
 Parameter a is half what it "should" be. In other words, this function
 does not find u and v st. u*a - v*b = 1, but rather u*(2a) - v*b = 1. */
 
-__device__ void xbinGCD(INT_64 a, INT_64 b, INT_64 *pu, INT_64 *pv)
+__device__ void xbinGCD(uint64 a, uint64 b, uint64 *pu, uint64 *pv)
 {
-	INT_64 alpha, beta, u, v;
+	uint64 alpha, beta, u, v;
 	//printf("Doing GCD(%llx, %llx)\n", a, b);
 
 	u = 1; v = 0;
@@ -475,9 +474,9 @@ __device__ void xbinGCD(INT_64 a, INT_64 b, INT_64 *pu, INT_64 *pv)
 
 //montgomery multiplication method from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
 //slightly modified to use more efficient 64 bit multiply-adds in PTX assembly
-__device__ void montgomeryMult(INT_64 abar, INT_64 bbar, INT_64 mod, INT_64 mprime, INT_64 & output) {
+__device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mprime, uint64 & output) {
 
-	INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, uhi = 0;
+	uint64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, uhi = 0;
 	//INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, tmmlo = 0, uhi = 0, ulo = 0, ov = 0;
 
 	//printf("\nmontmul, abar = %016llx, bbar   = %016llx\n", abar, bbar);
@@ -488,7 +487,7 @@ __device__ void montgomeryMult(INT_64 abar, INT_64 bbar, INT_64 mod, INT_64 mpri
 	multiply64By64(abar, bbar, &tlo, &thi);
 
 	//unless tlo is zero here, there will always be a carry from tm*mod + tlo
-	INT_64 lowerCarry = (tlo > 0);
+	uint64 lowerCarry = (tlo > 0);
 
 	//this would only be a problem if thi was 2^64 - 1
 	//which can never occur if mod is representable in an unsigned long long
@@ -531,21 +530,21 @@ __device__ void montgomeryMult(INT_64 abar, INT_64 bbar, INT_64 mod, INT_64 mpri
 //the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
-__device__ void modExpLeftToRight(const INT_64 & exp, const INT_64 & mod, INT_64 highestBitMask, INT_64 & output) {
+__device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, uint64 highestBitMask, uint64 & output) {
 
 	if (!exp) {
 		//no need to set output to anything as it is already 1
 		return;
 	}
 
-	INT_64 rInverse, mPrime;
+	uint64 rInverse, mPrime;
 
 	//finds rInverse*2^64 - mPrime*mod = 1
 	xbinGCD(int64MaxBit, mod, &rInverse, &mPrime);
 
-	INT_64 result;
+	uint64 result;
 
-	INT_64 maxMod = int64MaxBit % mod;
+	uint64 maxMod = int64MaxBit % mod;
 
 	maxMod <<= 1;
 	
@@ -555,7 +554,7 @@ __device__ void modExpLeftToRight(const INT_64 & exp, const INT_64 & mod, INT_64
 	modMultiply64Bit(maxMod, baseSystem, mod, maxMod, result);
 
 	//save this to use in loop
-	INT_64 baseBar = result;
+	uint64 baseBar = result;
 
 	while (highestBitMask > 1) {
 
@@ -574,8 +573,8 @@ __device__ void modExpLeftToRight(const INT_64 & exp, const INT_64 & mod, INT_64
 //find ( baseSystem^n % mod ) / mod and add to partialSum
 //experimented with placing forceinline and noinline on various functions again
 //with new changes, noinline now has most effect here, no idea why
-__device__ __noinline__ void fractionalPartOfSum(const TYPE & exp, const TYPE & mod, double *partialSum, TYPE highestBitMask, const int & negative) {
-	TYPE expModResult = 1;
+__device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint64 & mod, double *partialSum, uint64 highestBitMask, const int & negative) {
+	uint64 expModResult = 1;
 	modExpLeftToRight(exp, mod, highestBitMask, expModResult);
 	double sumTerm = (((double)expModResult) / ((double)mod));
 	
@@ -588,13 +587,13 @@ __device__ __noinline__ void fractionalPartOfSum(const TYPE & exp, const TYPE & 
 
 //stride over all parts of summation in bbp formula where k <= n
 //to compute partial sJ sums
-__device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ* output, volatile INT_64* progress, int progressCheck) {
+__device__ void bbp(uint64 n, uint64 start, uint64 end, int gridId, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
 
-	TYPE highestExpBit = 1;
+	uint64 highestExpBit = 1;
 	while (highestExpBit <= n)	highestExpBit <<= 1;
-	for (TYPE k = start; k <= end; k += stride) {
+	for (uint64 k = start; k <= end; k += stride) {
 		while (highestExpBit > (n - k))  highestExpBit >>= 1;
-		TYPE mod = 4 * k + 1;
+		uint64 mod = 4 * k + 1;
 		fractionalPartOfSum(n - k, mod, &((*output).s4k1), highestExpBit, k & 1);
 		mod += 2;//4k + 3
 		fractionalPartOfSum(n - k, mod, &((*output).s4k3), highestExpBit, k & 1);
@@ -617,10 +616,10 @@ __device__ void bbp(TYPE n, TYPE start, INT_64 end, int gridId, TYPE stride, sJ*
 
 //determine from thread and block position where to begin stride
 //only one of the threads per kernel (AND ONLY ON GPU0) will report progress
-__global__ void bbpKernel(sJ *c, volatile INT_64 *progress, TYPE digit, int gpuNum, INT_64 begin, INT_64 end, INT_64 stride)
+__global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 digit, int gpuNum, uint64 begin, uint64 end, uint64 stride)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
-	TYPE start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
+	uint64 start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
 	bbp(digit, start, end, gridId, stride, c + gridId, progress, progressCheck);
 }
@@ -670,7 +669,7 @@ cudaError_t reduceSJ(sJ *c, unsigned int size) {
 //compute four steps of sJ sums for i > n and add to sJ sums found previously
 //combine sJs according to bbp formula
 //multiply by 16^5 to extract five digits of pi starting at n
-long finalizeDigit(sJ input, TYPE n) {
+long finalizeDigit(sJ input, uint64 n) {
 	double reducer = 1.0;
 	double s1 = input.s1;
 	double s4 = input.s4;
@@ -701,7 +700,7 @@ long finalizeDigit(sJ input, TYPE n) {
 	return (long)hexDigit;
 }
 
-INT_64 finalizeDigitAlt(sJ input, TYPE n) {
+uint64 finalizeDigitAlt(sJ input, uint64 n) {
 	double reducer = 1.0;
 
 	//unfortunately 64 is not a power of 16, so if n is < 2
@@ -771,10 +770,10 @@ INT_64 finalizeDigitAlt(sJ input, TYPE n) {
 	//shift left by 8 hex digits
 	for (int i = 0; i < 12; i++) hexDigit *= 16.0;
 	printf("hexDigit = %.8f\n", hexDigit);
-	return (INT_64)hexDigit;
+	return (uint64)hexDigit;
 }
 
-void checkForProgressCache(INT_64 digit, INT_64 * contFrom, sJ * cache, double * previousTime) {
+void checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * previousTime) {
 	std::string target = "digit" + std::to_string(digit) + "Base";
 	std::string pToFile;
 	int found = 0;
@@ -844,13 +843,13 @@ int main()
 {
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
-		INT_64 hexDigitPosition;
+		uint64 hexDigitPosition;
 		std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
 		std::cin >> hexDigitPosition;
 		//subtract 1 to convert to 0-indexed
 		hexDigitPosition--;
 
-		INT_64 sumEnd = 0;
+		uint64 sumEnd = 0;
 
 		//convert from number of digits in base16 to base1024
 		//because of the 1/64 in formula, we must subtract log16(64) which is 1.5, so carrying the 2 * (digitPosition - 1.5) = 2 * digitPosition - 3
@@ -858,7 +857,7 @@ int main()
 		if (hexDigitPosition < 2) sumEnd = 0;
 		else sumEnd = ((2LLU * hexDigitPosition) - 3LLU) / 5LLU;
 
-		INT_64 beginFrom = 0;
+		uint64 beginFrom = 0;
 		sJ cudaResult;
 		double previousTime = 0.0;
 		checkForProgressCache(sumEnd, &beginFrom, &cudaResult, &previousTime);
@@ -918,7 +917,7 @@ int main()
 
 		free(prog);
 
-		INT_64 hexDigit = finalizeDigitAlt(cudaResult, hexDigitPosition);
+		uint64 hexDigit = finalizeDigitAlt(cudaResult, hexDigitPosition);
 
 		clock_t end = clock();
 
@@ -948,7 +947,7 @@ PPROGRESSDATA setupProgress() {
 	std::atomic_init(&threadData->dataWritten, 0);
 
 	//these variables are linked between host and device memory allowing each to communicate about progress
-	volatile INT_64 *currProgHost, *currProgDevice;
+	volatile uint64 *currProgHost, *currProgDevice;
 
 	//allow device to map host memory for progress ticker
 	threadData->error = cudaSetDeviceFlags(cudaDeviceMapHost);
@@ -958,14 +957,14 @@ PPROGRESSDATA setupProgress() {
 	}
 
 	// Allocate Host memory for progress ticker
-	threadData->error = cudaHostAlloc((void**)&currProgHost, sizeof(INT_64), cudaHostAllocMapped);
+	threadData->error = cudaHostAlloc((void**)&currProgHost, sizeof(uint64), cudaHostAllocMapped);
 	if (threadData->error != cudaSuccess) {
 		fprintf(stderr, "cudaHostAalloc failed!");
 		return threadData;
 	}
 
 	//create link between between host and device memory for progress ticker
-	threadData->error = cudaHostGetDevicePointer((INT_64 **)&currProgDevice, (INT_64 *)currProgHost, 0);
+	threadData->error = cudaHostGetDevicePointer((uint64 **)&currProgDevice, (uint64 *)currProgHost, 0);
 	if (threadData->error != cudaSuccess) {
 		fprintf(stderr, "cudaHostGetDevicePointer failed!");
 		return threadData;
@@ -1018,7 +1017,7 @@ void progressCheck(PPROGRESSDATA progP) {
 			//this should always be the case since each 1000 strides are separated by about 90 seconds currently
 			//it would be very unlikely for one gpu to get 1000 strides ahead of another, unless the GPUs were not the same
 			int sJsAligned = 1;
-			INT_64 contProcess = progP->nextStrideBegin[0];
+			uint64 contProcess = progP->nextStrideBegin[0];
 			for (int i = 1; i < totalGpus; i++) sJsAligned &= (progP->nextStrideBegin[i] == contProcess);
 			
 			if (sJsAligned) {
@@ -1070,15 +1069,15 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 	int size = data->size;
 	int gpu = data->gpu;
 	int totalGpus = data->totalGpus;
-	INT_64 digit = data->digit;
-	volatile INT_64 * currProgDevice = data->deviceProg;
+	uint64 digit = data->digit;
+	volatile uint64 * currProgDevice = data->deviceProg;
 	sJ *dev_c = 0;
 	sJ* c = new sJ[1];
 	sJ *dev_ex = 0;
 
 	cudaError_t cudaStatus;
 	
-	INT_64 stride, launchWidth, neededLaunches;
+	uint64 stride, launchWidth, neededLaunches;
 
 	// Choose which GPU to run on, change this on a multi-GPU system.
 	cudaStatus = cudaSetDevice(gpu);
@@ -1101,7 +1100,7 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 		goto Error;
 	}
 
-	stride =  (INT_64) size * (INT_64) totalGpus;
+	stride =  (uint64) size * (uint64) totalGpus;
 
 	launchWidth = stride * 64LLU;
 
@@ -1110,10 +1109,10 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 	//even when digit/launchWidth is an integer, it is necessary to add 1
 	neededLaunches = ((digit - data->beginFrom) / launchWidth) + 1LLU;
 
-	for (INT_64 launch = 0; launch < neededLaunches; launch++) {
+	for (uint64 launch = 0; launch < neededLaunches; launch++) {
 
-		INT_64 begin = data->beginFrom + (launchWidth * launch);
-		INT_64 end = data->beginFrom + (launchWidth * (launch + 1)) - 1;
+		uint64 begin = data->beginFrom + (launchWidth * launch);
+		uint64 end = data->beginFrom + (launchWidth * (launch + 1)) - 1;
 		if (end > digit) end = digit;
 
 		// Launch a kernel on the GPU with one thread for each element.
