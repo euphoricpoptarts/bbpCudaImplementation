@@ -34,8 +34,7 @@ __device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
 __device__ int printOnce = 0;
 
 struct sJ {
-	double s1 = 0.0, s4 = 0.0, s5 = 0.0, s6 = 0.0;
-	double s4k1 = 0.0, s4k3 = 0.0, s10k1 = 0.0, s10k3 = 0.0, s10k5 = 0.0, s10k7 = 0.0, s10k9 = 0.0;
+	double s[7];
 };
 
 typedef struct {
@@ -72,24 +71,10 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA dataV);
 
 //adds all elements of addend and augend, storing in addend
 __device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
-	addend->s1 += augend->s1;
-	addend->s4 += augend->s4;
-	addend->s5 += augend->s5;
-	addend->s6 += augend->s6;
-	addend->s4k1 += augend->s4k1;
-	addend->s4k3 += augend->s4k3;
-	addend->s10k1 += augend->s10k1;
-	addend->s10k3 += augend->s10k3;
-	addend->s10k5 += augend->s10k5;
-	addend->s10k7 += augend->s10k7;
-	addend->s10k9 += augend->s10k9;
-	if (addend->s4k1 >= 1.0) addend->s4k1 -= (int)addend->s4k1;
-	if (addend->s4k3 >= 1.0) addend->s4k3 -= (int)addend->s4k3;
-	if (addend->s10k1 >= 1.0) addend->s10k1 -= (int)addend->s10k1;
-	if (addend->s10k3 >= 1.0) addend->s10k3 -= (int)addend->s10k3;
-	if (addend->s10k5 >= 1.0) addend->s10k5 -= (int)addend->s10k5;
-	if (addend->s10k7 >= 1.0) addend->s10k7 -= (int)addend->s10k7;
-	if (addend->s10k9 >= 1.0) addend->s10k9 -= (int)addend->s10k9;
+	for (int i = 0; i < 7; i++) {
+		addend->s[i] += augend->s[i];
+		if (addend->s[i] >= 1.0) addend->s[i] -= 1.0;
+	}
 }
 
 //not actually quick
@@ -550,7 +535,7 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
 //now uses quarternary exponentiation, in an effort to halve the number of multplications required when exponent and bitmask match
-__device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, uint64 highestBitMask, uint64 & output) {
+__device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int shiftToLittleBits, uint64 & output) {
 
 	if (!exp) {
 		//no need to set output to anything as it is already 1
@@ -576,26 +561,27 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, uint64
 	//save this to use in loop
 	uint64 baseBar = result;
 
-	int shiftToLittleBits = 62 - __clzll(highestBitMask);
+	//int shiftToLittleBits = 62 - __clzll(highestBitMask);
 
 	uint64 baseNonZeroPowers[3];
 	baseNonZeroPowers[0] = baseBar;
 	montgomeryMult(baseBar, baseBar, mod, mPrime, baseNonZeroPowers[1]);//baseNonZeroPowers[1] = baseBar^2
 	montgomeryMult(baseNonZeroPowers[1], baseBar, mod, mPrime, baseNonZeroPowers[2]);//baseNonZeroPowers[2] = baseBar^3
 
-	int selector = ((exp&highestBitMask) >> shiftToLittleBits) - 1;
+	int selector = ((exp >> shiftToLittleBits) & 3) - 1;
 	result = baseNonZeroPowers[selector];
 
-	while (highestBitMask > 3) {
+	while (shiftToLittleBits) {
 
 		montgomeryMult(result, result, mod, mPrime, result);//result^2
 		montgomeryMult(result, result, mod, mPrime, result);//result^4
 
-		highestBitMask >>= 2;
 		shiftToLittleBits -= 2;
 
-		if (exp&highestBitMask) {
-			selector = ((exp&highestBitMask) >> shiftToLittleBits) - 1;
+		int quarternaryDigit = (exp >> shiftToLittleBits) & 3;
+
+		if (quarternaryDigit) {
+			selector = quarternaryDigit - 1;
 			montgomeryMult(result, baseNonZeroPowers[selector], mod, mPrime, result);//result*base
 		}
 	}
@@ -609,9 +595,9 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, uint64
 //find ( baseSystem^n % mod ) / mod and add to partialSum
 //experimented with placing forceinline and noinline on various functions again
 //with new changes, noinline now has most effect here, no idea why
-__device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint64 & mod, double *partialSum, uint64 highestExpBitPairMask, const int & negative) {
+__device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint64 & mod, double *partialSum, int shift, const int & negative) {
 	uint64 expModResult = 1;
-	modExpLeftToRight(exp, mod, highestExpBitPairMask, expModResult);
+	modExpLeftToRight(exp, mod, shift, expModResult);
 	double sumTerm = (((double)expModResult) / ((double)mod));
 	
 	//if n is odd, then sumTerm will be negative
@@ -628,25 +614,32 @@ __device__ void bbp(uint64 n, uint64 start, uint64 end, int gridId, uint64 strid
 	//highestExpBit is used to select 2 adjacent bits from exponent
 	//starting at highest set pair of bits
 	uint64 highestExpBitPairMask = 3LLU;
-	while (highestExpBitPairMask <= n || (highestExpBitPairMask & n))	highestExpBitPairMask <<= 2;
+	int shift = 0;
+	while (highestExpBitPairMask <= n || (highestExpBitPairMask & n)) {
+		highestExpBitPairMask <<= 2;
+		shift += 2;
+	}
 	for (uint64 k = start; k <= end; k += stride) {
 		uint64 exp = n - k;
 		//shift until mask and exp have matching bits
-		while (!(highestExpBitPairMask & exp) && highestExpBitPairMask > exp)  highestExpBitPairMask >>= 2;
+		while (!(highestExpBitPairMask & exp) && highestExpBitPairMask > exp) {
+			highestExpBitPairMask >>= 2;
+			shift -= 2;
+		}
 		uint64 mod = 4 * k + 1;
-		fractionalPartOfSum(exp, mod, &(output->s4k1), highestExpBitPairMask, k & 1);
+		fractionalPartOfSum(exp, mod, output->s, shift, k & 1);
 		mod += 2;//4k + 3
-		fractionalPartOfSum(exp, mod, &(output->s4k3), highestExpBitPairMask, k & 1);
+		fractionalPartOfSum(exp, mod, output->s + 1, shift, k & 1);
 		mod = 10 * k + 1;
-		fractionalPartOfSum(exp, mod, &(output->s10k1), highestExpBitPairMask, k & 1);
+		fractionalPartOfSum(exp, mod, output->s + 2, shift, k & 1);
 		mod += 2;//10k + 3
-		fractionalPartOfSum(exp, mod, &(output->s10k3), highestExpBitPairMask, k & 1);
+		fractionalPartOfSum(exp, mod, output->s + 3, shift, k & 1);
 		mod += 2;//10k + 5
-		fractionalPartOfSum(exp, mod, &(output->s10k5), highestExpBitPairMask, k & 1);
+		fractionalPartOfSum(exp, mod, output->s + 4, shift, k & 1);
 		mod += 2;//10k + 7
-		fractionalPartOfSum(exp, mod, &(output->s10k7), highestExpBitPairMask, k & 1);
+		fractionalPartOfSum(exp, mod, output->s + 5, shift, k & 1);
 		mod += 2;//10k + 9
-		fractionalPartOfSum(exp, mod, &(output->s10k9), highestExpBitPairMask, k & 1);
+		fractionalPartOfSum(exp, mod, output->s + 6 , shift, k & 1);
 		if (!progressCheck) {
 			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
 			*progress = k;
@@ -706,41 +699,7 @@ cudaError_t reduceSJ(sJ *c, unsigned int size) {
 	return cudaStatus;
 }
 
-//compute four steps of sJ sums for i > n and add to sJ sums found previously
-//combine sJs according to bbp formula
-//multiply by 16^5 to extract five digits of pi starting at n
-long finalizeDigit(sJ input, uint64 n) {
-	double reducer = 1.0;
-	double s1 = input.s1;
-	double s4 = input.s4;
-	double s5 = input.s5;
-	double s6 = input.s6;
-	double trash = 0.0;
-	if (n < 16000) {
-		for (int i = 0; i < 4; i++) {
-			n++;
-			reducer /= (double)baseSystem;
-			double eightN = 8.0 * n;
-			s1 += reducer / (eightN + 1.0);
-			s4 += reducer / (eightN + 4.0);
-			s5 += reducer / (eightN + 5.0);
-			s6 += reducer / (eightN + 6.0);
-		}
-	}
-	//remove any integer part of s1-s6
-	s1 = modf(s1, &trash);
-	s4 = modf(s4, &trash);
-	s5 = modf(s5, &trash);
-	s6 = modf(s6, &trash);
-	double hexDigit = 4.0*s1 - 2.0*s4 - s5 - s6;
-	hexDigit = modf(hexDigit, &trash);
-	if (hexDigit < 0) hexDigit++;
-	hexDigit *= baseSystem*baseSystem*baseSystem*baseSystem*baseSystem;
-	printf("hexDigit = %.8f\n", hexDigit);
-	return (long)hexDigit;
-}
-
-uint64 finalizeDigitAlt(sJ input, uint64 n) {
+uint64 finalizeDigit(sJ input, uint64 n) {
 	double reducer = 1.0;
 
 	//unfortunately 64 is not a power of 16, so if n is < 2
@@ -755,13 +714,8 @@ uint64 finalizeDigitAlt(sJ input, uint64 n) {
 	else n = (2 * n - 3) / 5;
 
 	double trash = 0.0;
-	double s4k1 = input.s4k1 * reducer;//modf(input.s4k1, &trash);
-	double s4k3 = input.s4k3 * reducer;//modf(input.s4k3, &trash);
-	double s10k1 = input.s10k1 * reducer;//modf(input.s10k1, &trash);
-	double s10k3 = input.s10k3 * reducer;//modf(input.s10k3, &trash);
-	double s10k5 = input.s10k5 * reducer;//modf(input.s10k5, &trash);
-	double s10k7 = input.s10k7 * reducer;//modf(input.s10k7, &trash);
-	double s10k9 = input.s10k9 * reducer;//modf(input.s10k9, &trash);
+	double *s = input.s;
+	for (int i = 0; i < 7; i++) s[i] *= reducer;
 	
 	if (n < 16000) {
 		for (int i = 0; i < 5; i++) {
@@ -770,33 +724,25 @@ uint64 finalizeDigitAlt(sJ input, uint64 n) {
 			double nD = (double)n;
 			if (n & 1) sign = -1.0;
 			reducer /= (double)baseSystem;
-			s4k1 += sign * reducer / (4.0 * nD + 1.0);
-			s4k3 += sign * reducer / (4.0 * nD + 3.0);
-			s10k1 += sign * reducer / (10.0 * nD + 1.0);
-			s10k3 += sign * reducer / (10.0 * nD + 3.0);
-			s10k5 += sign * reducer / (10.0 * nD + 5.0);
-			s10k7 += sign * reducer / (10.0 * nD + 7.0);
-			s10k9 += sign * reducer / (10.0 * nD + 9.0);
+			s[0] += sign * reducer / (4.0 * nD + 1.0);
+			s[1] += sign * reducer / (4.0 * nD + 3.0);
+			s[2] += sign * reducer / (10.0 * nD + 1.0);
+			s[3] += sign * reducer / (10.0 * nD + 3.0);
+			s[4] += sign * reducer / (10.0 * nD + 5.0);
+			s[5] += sign * reducer / (10.0 * nD + 7.0);
+			s[6] += sign * reducer / (10.0 * nD + 9.0);
 		}
 	}
 
 	//multiply sJs by coefficients from Bellard's formula and then find their fractional parts
-	s4k1 = modf(-32.0*s4k1, &trash);
-	if (s4k1 < 0) s4k1++;
-	s4k3 = modf(-1.0*s4k3, &trash);
-	if (s4k3 < 0) s4k3++;
-	s10k1 = modf(256.0*s10k1, &trash);
-	if (s10k1 < 0) s10k1++;
-	s10k3 = modf(-64.0*s10k3, &trash);
-	if (s10k3 < 0) s10k3++;
-	s10k5 = modf(-4.0*s10k5, &trash);
-	if (s10k5 < 0) s10k5++;
-	s10k7 = modf(-4.0*s10k7, &trash);
-	if (s10k7 < 0) s10k7++;
-	s10k9 = modf(s10k9, &trash);
-	if (s10k9 < 0) s10k9++;
+	double coeffs[7] = { -32.0, -1.0, 256.0, -64.0, -4.0, -4.0, 1.0 };
+	for (int i = 0; i < 7; i++) {
+		s[i] = modf(coeffs[i] * s[i], &trash);
+		if (s[i] < 0.0) s[i]++;
+	}
 
-	double hexDigit = s4k1 + s4k3 + s10k1 + s10k3 + s10k5 + s10k7 + s10k9;
+	double hexDigit = 0.0;
+	for (int i = 0; i < 7; i++) hexDigit += s[i];
 	hexDigit = modf(hexDigit, &trash);
 	if (hexDigit < 0) hexDigit++;
 
@@ -848,13 +794,7 @@ void checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double *
 					//however msvc doesn't output correctly for doubles with hexfloat (it outputs as a float)
 					//but it appears to work correctly for reading into doubles as tested so far
 					file >> std::hexfloat >> *previousTime;
-					file >> std::hexfloat >> cache->s4k1;
-					file >> std::hexfloat >> cache->s4k3;
-					file >> std::hexfloat >> cache->s10k1;
-					file >> std::hexfloat >> cache->s10k3;
-					file >> std::hexfloat >> cache->s10k5;
-					file >> std::hexfloat >> cache->s10k7;
-					file >> std::hexfloat >> cache->s10k9;
+					for (int i = 0; i < 7; i++) file >> std::hexfloat >> cache->s[i];
 				}
 				catch(std::ifstream::failure& e) {
 					fprintf(stderr, "Error opening file %s\n", pToFile.c_str());
@@ -957,7 +897,7 @@ int main()
 
 		free(prog);
 
-		uint64 hexDigit = finalizeDigitAlt(cudaResult, hexDigitPosition);
+		uint64 hexDigit = finalizeDigit(cudaResult, hexDigitPosition);
 
 		clock_t end = clock();
 
@@ -1080,13 +1020,7 @@ void progressCheck(PPROGRESSDATA progP) {
 					for (int i = 0; i < totalGpus; i++) {
 						sJAdd(&currStatus, progP->status + i);
 					}
-					fprintf(file, "%a\n", currStatus.s4k1);
-					fprintf(file, "%a\n", currStatus.s4k3);
-					fprintf(file, "%a\n", currStatus.s10k1);
-					fprintf(file, "%a\n", currStatus.s10k3);
-					fprintf(file, "%a\n", currStatus.s10k5);
-					fprintf(file, "%a\n", currStatus.s10k7);
-					fprintf(file, "%a", currStatus.s10k9);
+					for(int i = 0; i < 7; i++) fprintf(file, "%a\n", currStatus.s[i]);
 					fclose(file);
 				}
 				else {
