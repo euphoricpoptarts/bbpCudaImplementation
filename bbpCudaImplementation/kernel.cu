@@ -239,6 +239,35 @@ __device__ void multiply64By64(uint64 multiplicand, uint64 multiplier, uint64 * 
 }
 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
+__device__ void multiply64By64PlusHi(uint64 multiplicand, uint64 multiplier, uint64 * lo, uint64 * hi) {
+
+	//a : multiplicand
+	//b : multiplier
+	//_lo : low 32 bits of result
+	//_hi : high 32 bits of result
+	asm("{\n\t"
+		".reg .u32          t0, t1, t2, t3, v0, v1, v2, v3;\n\t"
+		"mov.b64           {t2, t3}, %4;\n\t"
+		"mov.b64           {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
+		"mov.b64           {v2, v3}, %3;\n\t" //splits b into hi and lo 32 bit words
+		"mul.lo.u32         t0, v0, v2;    \n\t" //lolo = lo(alo*blo)
+		"mul.hi.u32         t1, v0, v2;    \n\t" //lohi = hi(alo*blo)
+		"mad.lo.cc.u32      t1, v0, v3, t1;\n\t" //lohi = lo(alo*bhi) + hi(alo*blo) (with carry flag)
+		"madc.hi.cc.u32     t2, v0, v3, t2;\n\t" //hilo = starting_value + hi(alo*bhi) + 1 carry (with carry flag)
+		"madc.hi.u32        t3, v1, v3, t3;\n\t" //hihi = starting_value + hi(ahi*bhi) + 1 carry (no need to set carry)
+		"mad.lo.cc.u32      t1, v1, v2, t1;\n\t" //lohi = lo(ahi*blo) + lo(alo*bhi) + hi(alo*blo) (with carry flag)
+		"madc.hi.cc.u32     t2, v1, v2, t2;\n\t" //hilo = starting_value + hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
+		"addc.u32           t3, t3, 0;\n\t" //hihi = starting_value + hi(ahi*bhi) + 2 carries (no need to set carry)
+		"mad.lo.cc.u32      t2, v1, v3, t2;\n\t" //hilo = starting_value + lo(ahi*bhi) + hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
+		"addc.u32           t3, t3, 0;\n\t" //hihi = starting_value + hi(ahi*bhi) + 3 carries
+		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
+		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		"}"
+		: "=l"(*lo), "=l"(*hi)
+		: "l"(multiplicand), "l"(multiplier), "l"(*hi));
+}
+
+//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
 //adds the results to the contents of lo
 //basically a 128 bit mad with 64 bit inputs
 __device__ void multiply64By64PlusLo(uint64 multiplicand, uint64 multiplier, uint64 * lo, uint64 * hi) {
@@ -476,7 +505,7 @@ __device__ void xbinGCD(uint64 a, uint64 b, uint64 *pu, uint64 *pv)
 //slightly modified to use more efficient 64 bit multiply-adds in PTX assembly
 __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mprime, uint64 & output) {
 
-	uint64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, uhi = 0;
+	uint64 thi = 0, tlo = 0, tm = 0;
 	//INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, tmmlo = 0, uhi = 0, ulo = 0, ov = 0;
 
 	//printf("\nmontmul, abar = %016llx, bbar   = %016llx\n", abar, bbar);
@@ -505,31 +534,22 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 	//but mprime*mod is constant for a given mod
 	//is there a way to reduce the amount of work from this?
 	//multiply64By64PlusLo(tm, mod, &tlo, &tmmhi);
-	multiply64By64(tm, mod, &tlo, &tmmhi);//tlo is not used
-	uhi = thi + tmmhi;
-
-	// The above addition can overflow. Detect that here.
-	//tmmhi will only be zero if tlo was zero above
-	//so an overflow can only exist with a non-zero tmmhi
-	//also if mod is < 2^63 this can't overflow, so no need to check
-	//ov = (uhi < thi);
-	// if (ov > 0 || ulo >= mod)      // If u >= mod,
-	//    ulo = ulo - mod;            // subtract mod from u.
-	//uhi = uhi - (mod & -(ov | (uhi >= mod))); // Alternative
-										  // with no branching.
+	multiply64By64PlusHi(tm, mod, &tlo, &thi);//tlo is not used
+	//also if mod is < 2^63 this can't overflow
 	
 	//assumes mod < 2^63, WILL NOT WORK if mod > 2^63 because overflow can exist in above addition in that case
-	//if (uhi >= mod) uhi -= mod;
+	//if (thi >= mod) thi -= mod;
 	//in addition to mitigating most GPUs' poor conditional branching performance, unconditional code execution is also resistant to side-channel attacks
-	uhi = uhi - (mod & -((uhi >= mod)));
+	thi = thi - (mod & -((thi >= mod)));
 
-	output = uhi;
+	output = thi;
 }
 
 //using left-to-right binary exponentiation
 //the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
+//modified to scan 2 bits of exp at a time, in an effort to halve the number of multplications required when exponent and bitmask match
 __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, uint64 highestBitMask, uint64 & output) {
 
 	if (!exp) {
@@ -556,12 +576,28 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, uint64
 	//save this to use in loop
 	uint64 baseBar = result;
 
-	while (highestBitMask > 1) {
+	int shiftToLittleBits = 62 - __clzll(highestBitMask);
+
+	uint64 baseNonZeroPowers[3];
+	baseNonZeroPowers[0] = baseBar;
+	montgomeryMult(baseBar, baseBar, mod, mPrime, baseNonZeroPowers[1]);//baseNonZeroPowers[1] = baseBar^2
+	montgomeryMult(baseNonZeroPowers[1], baseBar, mod, mPrime, baseNonZeroPowers[2]);//baseNonZeroPowers[2] = baseBar^3
+
+	int selector = ((exp&highestBitMask) >> shiftToLittleBits) - 1;
+	result = baseNonZeroPowers[selector];
+
+	while (highestBitMask > 3) {
 
 		montgomeryMult(result, result, mod, mPrime, result);//result^2
+		montgomeryMult(result, result, mod, mPrime, result);//result^4
 
-		highestBitMask >>= 1;
-		if (exp&highestBitMask) montgomeryMult(result, baseBar, mod, mPrime, result);//result*base
+		highestBitMask >>= 2;
+		shiftToLittleBits -= 2;
+
+		if (exp&highestBitMask) {
+			selector = ((exp&highestBitMask) >> shiftToLittleBits) - 1;
+			montgomeryMult(result, baseNonZeroPowers[selector], mod, mPrime, result);//result*base
+		}
 	}
 
 	//convert result out of montgomery form
@@ -573,9 +609,9 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, uint64
 //find ( baseSystem^n % mod ) / mod and add to partialSum
 //experimented with placing forceinline and noinline on various functions again
 //with new changes, noinline now has most effect here, no idea why
-__device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint64 & mod, double *partialSum, uint64 highestBitMask, const int & negative) {
+__device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint64 & mod, double *partialSum, uint64 highestExpBitPairMask, const int & negative) {
 	uint64 expModResult = 1;
-	modExpLeftToRight(exp, mod, highestBitMask, expModResult);
+	modExpLeftToRight(exp, mod, highestExpBitPairMask, expModResult);
 	double sumTerm = (((double)expModResult) / ((double)mod));
 	
 	//if n is odd, then sumTerm will be negative
@@ -589,25 +625,28 @@ __device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint6
 //to compute partial sJ sums
 __device__ void bbp(uint64 n, uint64 start, uint64 end, int gridId, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
 
-	uint64 highestExpBit = 1;
-	while (highestExpBit <= n)	highestExpBit <<= 1;
+	//highestExpBit is used to select 2 adjacent bits from exponent
+	//starting at highest set pair of bits
+	uint64 highestExpBitPairMask = 3LLU;
+	while (highestExpBitPairMask <= n || (highestExpBitPairMask & n))	highestExpBitPairMask <<= 2;
 	for (uint64 k = start; k <= end; k += stride) {
-		while (highestExpBit > (n - k))  highestExpBit >>= 1;
-		uint64 mod = 4 * k + 1;
 		uint64 exp = n - k;
-		fractionalPartOfSum(exp, mod, &(output->s4k1), highestExpBit, k & 1);
+		//shift until mask and exp have matching bits
+		while (!(highestExpBitPairMask & exp) && highestExpBitPairMask > exp)  highestExpBitPairMask >>= 2;
+		uint64 mod = 4 * k + 1;
+		fractionalPartOfSum(exp, mod, &(output->s4k1), highestExpBitPairMask, k & 1);
 		mod += 2;//4k + 3
-		fractionalPartOfSum(exp, mod, &(output->s4k3), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s4k3), highestExpBitPairMask, k & 1);
 		mod = 10 * k + 1;
-		fractionalPartOfSum(exp, mod, &(output->s10k1), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s10k1), highestExpBitPairMask, k & 1);
 		mod += 2;//10k + 3
-		fractionalPartOfSum(exp, mod, &(output->s10k3), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s10k3), highestExpBitPairMask, k & 1);
 		mod += 2;//10k + 5
-		fractionalPartOfSum(exp, mod, &(output->s10k5), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s10k5), highestExpBitPairMask, k & 1);
 		mod += 2;//10k + 7
-		fractionalPartOfSum(exp, mod, &(output->s10k7), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s10k7), highestExpBitPairMask, k & 1);
 		mod += 2;//10k + 9
-		fractionalPartOfSum(exp, mod, &(output->s10k9), highestExpBit, k & 1);
+		fractionalPartOfSum(exp, mod, &(output->s10k9), highestExpBitPairMask, k & 1);
 		if (!progressCheck) {
 			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
 			*progress = k;
