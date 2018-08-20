@@ -549,7 +549,7 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 //the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
-//modified to scan 2 bits of exp at a time, in an effort to halve the number of multplications required when exponent and bitmask match
+//now uses quarternary exponentiation, in an effort to halve the number of multplications required when exponent and bitmask match
 __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, uint64 highestBitMask, uint64 & output) {
 
 	if (!exp) {
