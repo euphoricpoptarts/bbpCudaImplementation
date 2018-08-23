@@ -613,22 +613,15 @@ __device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint6
 //stride over all parts of summation in bbp formula where k <= n
 //to compute partial sJ sums
 __device__ void bbp(uint64 n, uint64 start, uint64 end, int gridId, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
-
-	//highestExpBit is used to select 2 adjacent bits from exponent
-	//starting at highest set pair of bits
-	uint64 highestExpBitPairMask = 3LLU;
-	int shift = 0;
-	while (highestExpBitPairMask <= n || (highestExpBitPairMask & n)) {
-		highestExpBitPairMask <<= 2;
-		shift += 2;
-	}
 	for (uint64 k = start; k <= end; k += stride) {
 		uint64 exp = n - k;
-		//shift until mask and exp have matching bits
-		while (!(highestExpBitPairMask & exp) && highestExpBitPairMask > exp) {
-			highestExpBitPairMask >>= 2;
-			shift -= 2;
-		}
+		//shift represents number of bits needed to shift highest set bit pair in exp
+		//into the lowest 2 bits
+		int shift = 62 - __clzll(exp);
+		//if shift is negative set to zero
+		shift *= (shift > 0);
+		//if shift is odd round up to nearest multiple of 2
+		shift += shift & 1;
 		uint64 mod = 4 * k + 1;
 		fractionalPartOfSum(exp, mod, output->s, shift, k & 1);
 		mod += 2;//4k + 3
