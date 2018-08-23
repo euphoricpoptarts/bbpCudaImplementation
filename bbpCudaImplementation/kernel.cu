@@ -22,7 +22,7 @@ const int totalGpus = 2;
 //warpsize is 32 so optimal value is probably always a multiple of 32
 const int threadCountPerBlock = 128;
 //this is more difficult to optimize but seems to not like odd numbers
-const int blockCount = 560;
+const int blockCount = 1120;
 
 __device__ __constant__ const uint64 baseSystem = 1024;
 //__device__  __constant__ const int baseExpOf2 = 10;
@@ -598,13 +598,14 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 __device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint64 & mod, double *partialSum, int shift, const int & negative) {
 	uint64 expModResult = 1;
 	modExpLeftToRight(exp, mod, shift, expModResult);
+	//if k is odd, then sumTerm will be negative
+	//which just means we need to invert it about the modulus
+	if (negative) expModResult = mod - expModResult;
+
 	double sumTerm = (((double)expModResult) / ((double)mod));
 	
-	//if n is odd, then sumTerm will be negative
-	//add 1 to it to find its positive fractional part
-	if (negative) sumTerm = 1.0 - sumTerm;
 	*partialSum += sumTerm;
-	if((*partialSum) > 1.0) *partialSum -= (int)(*partialSum);
+	if((*partialSum) >= 1.0) *partialSum -= (int)(*partialSum);
 }
 
 //stride over all parts of summation in bbp formula where k <= n
