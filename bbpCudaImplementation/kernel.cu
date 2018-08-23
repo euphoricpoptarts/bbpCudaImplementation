@@ -17,6 +17,8 @@
 
 #define uint64 unsigned long long
 
+namespace chr = std::chrono;
+
 const int totalGpus = 2;
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
@@ -47,7 +49,7 @@ typedef struct {
 	uint64 maxProgress;
 	volatile int quit = 0;
 	cudaError_t error;
-	clock_t begin;
+	chr::high_resolution_clock::time_point * begin;
 	volatile std::atomic<int> dataWritten;
 } PROGRESSDATA, *PPROGRESSDATA;
 
@@ -846,12 +848,12 @@ int main()
 		std::thread handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];
 
-		clock_t start = clock();
+		chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
 
 		PPROGRESSDATA prog = setupProgress();
 
 		if (prog->error != cudaSuccess) return 1;
-		prog->begin = start;
+		prog->begin = &start;
 		prog->maxProgress = sumEnd;
 		prog->previousCache = cudaResult;
 		prog->previousTime = previousTime;
@@ -900,12 +902,13 @@ int main()
 
 		uint64 hexDigit = finalizeDigit(cudaResult, hexDigitPosition);
 
-		clock_t end = clock();
+		chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
 
 		printf("pi at hexadecimal digit %llu is %012llX\n",
 			hexDigitPosition + 1, hexDigit);
 
-		printf("Computed in %.8f seconds\n", previousTime + ((double)(end - start) / (double) CLOCKS_PER_SEC));
+		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
+		printf("Computed in %.8f seconds\n", previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
 
 		// cudaDeviceReset must be called before exiting in order for profiling and
 		// tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -963,31 +966,34 @@ PPROGRESSDATA setupProgress() {
 //this function is meant to be run by an independent thread to output progress to the console
 void progressCheck(PPROGRESSDATA progP) {
 
-	double lastProgress = 0;
-
 	std::deque<double> progressQ;
+	std::deque<chr::high_resolution_clock::time_point> timeQ;
 	int count = 0;
 	while(!progP->quit) {
 		count++;
 		double progress = (double)(*(progP->currentProgress)) / (double)progP->maxProgress;
 
-		progressQ.push_front(progress - lastProgress);
+		chr::high_resolution_clock::time_point now = chr::high_resolution_clock::now();
+		progressQ.push_front(progress);
+		timeQ.push_front(now);
 
-		if (progressQ.size() > 100) progressQ.pop_back();
+		//progressQ and timeQ should be same size at all times
+		if (progressQ.size() > 100) {
+			progressQ.pop_back();
+			timeQ.pop_back();
+		}
 
-		double progressAvg = 0.0;
+		double progressInPeriod = progressQ.front() - progressQ.back();
+		double elapsedPeriod = chr::duration_cast<chr::duration<double>>(timeQ.front() - timeQ.back()).count();
+		double progressPerSecond = progressInPeriod / elapsedPeriod;
 
-		for (std::deque<double>::iterator it = progressQ.begin(); it != progressQ.end(); *it++) progressAvg += *it;
-
-		progressAvg /= (double) progressQ.size();
-
-		double timeEst = 0.01*(1.0 - progress) / (progressAvg);
-		lastProgress = progress;
-		double time = progP->previousTime + ((double)(clock() - progP->begin) / (double)CLOCKS_PER_SEC);
+		double timeEst = (1.0 - progress) / (progressPerSecond);
+		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
+		double time = progP->previousTime + (chr::duration_cast<chr::duration<double>>(now - *progP->begin)).count();
 		//only print every 10th cycle or 0.1 seconds
 		if (count == 10) {
 			count = 0;
-			printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, progressAvg*10000.0, time);
+			printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond, time);
 		}
 
 		int expected = totalGpus;
