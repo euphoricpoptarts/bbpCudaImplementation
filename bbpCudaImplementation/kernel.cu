@@ -27,10 +27,7 @@ const int threadCountPerBlock = 128;
 const int blockCount = 1120;
 
 __device__ __constant__ const uint64 baseSystem = 1024;
-//__device__  __constant__ const int baseExpOf2 = 10;
 
-__device__ const int typeSize = sizeof(uint64) * 8 - 1;
-__device__ const uint64 multiplyModCond = 0x4000000000000000;//2^62
 __device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
 
 __device__ int printOnce = 0;
