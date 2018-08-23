@@ -105,6 +105,34 @@ __device__ void multiply64By64(uint64 multiplicand, uint64 multiplier, uint64 * 
 }
 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
+__device__ void multiply64By64Vector(uint64 multiplicand, uint64 multiplier, uint64 * lo, uint64 * hi) {
+
+	//a : multiplicand
+	//b : multiplier
+	//_lo : low 32 bits of result
+	//_hi : high 32 bits of result
+	asm("{\n\t"
+		".reg .u32          t0, t1, t2, t3, v0, v1, v2, v3;\n\t"
+		"mov.b64           {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
+		"mov.b64           {v2, v3}, %3;\n\t" //splits b into hi and lo 32 bit words
+		"mul.lo.u32         t0, v0, v2;    \n\t" //lolo = lo(alo*blo)
+		"mul.hi.u32         t1, v0, v2;    \n\t" //lohi = hi(alo*blo)
+		"mad.lo.cc.u32      t1, v0, v3, t1;\n\t" //lohi = lo(alo*bhi) + hi(alo*blo) (with carry flag)
+		"madc.hi.cc.u32     t2, v0, v3,  0;\n\t" //hilo = hi(alo*bhi) + 1 carry (with carry flag, as carry may need to propagate)
+		"madc.hi.u32        t3, v1, v3,  0;\n\t" //hihi = hi(ahi*bhi) + 1 carry (no need to set carry)
+		"mad.lo.cc.u32      t1, v1, v2, t1;\n\t" //lohi = lo(ahi*blo) + lo(alo*bhi) + hi(alo*blo) (with carry flag)
+		"madc.hi.cc.u32     t2, v1, v2, t2;\n\t" //hilo = hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
+		"addc.u32           t3, t3, 0;\n\t" //hihi = hi(ahi*bhi) + 2 carries (no need to set carry)
+		"mad.lo.cc.u32      t2, v1, v3, t2;\n\t" //hilo = lo(ahi*bhi) + hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
+		"addc.u32           t3, t3, 0;\n\t" //hihi = hi(ahi*bhi) + 3 carries
+		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
+		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		"}"
+		: "=l"(*lo), "=l"(*hi)
+		: "l"(multiplicand), "l"(multiplier));
+}
+
+//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
 __device__ void multiply64By64PlusHi(uint64 multiplicand, uint64 multiplier, uint64 * lo, uint64 * hi) {
 
 	//a : multiplicand
@@ -292,46 +320,47 @@ __device__ void xbinGCD(uint64 a, uint64 b, uint64 *pu, uint64 *pv)
 
 //montgomery multiplication method from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
 //slightly modified to use more efficient 64 bit multiply-adds in PTX assembly
-__device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mprime, uint64 & output) {
+__device__ void montgomeryMult(const uint64 abar[7], const uint64 bbar[7], const uint64 mod[7], const uint64 mprime[7], uint64 * output) {
 
-	uint64 thi = 0, tlo = 0, tm = 0;
-	//INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, tmmlo = 0, uhi = 0, ulo = 0, ov = 0;
-
-	//printf("\nmontmul, abar = %016llx, bbar   = %016llx\n", abar, bbar);
-	//printf("            m = %016llx, mprime = %016llx\n", m, mprime);
+	uint64 thi[7], tlo[7], tm[7];
 
 	/* t = abar*bbar. */
 
-	multiply64By64(abar, bbar, &tlo, &thi);
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++) {
+		tlo[i] = abar[i] * bbar[i];
+		thi[i] = __umul64hi(abar[i], bbar[i]);
+	}
 
-	//unless tlo is zero here, there will always be a carry from tm*mod + tlo
-	uint64 lowerCarry = (tlo > 0);
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++) {
 
-	//this would only be a problem if thi was 2^64 - 1
-	//which can never occur if mod is representable in an unsigned long long
-	thi += lowerCarry;
+		//unless tlo is zero here, there will always be a carry from tm*mod + tlo
+		//this would only be a problem if thi was 2^64 - 1
+		//which can never occur if mod is representable in an unsigned long long
+		thi[i] += (tlo[i] > 0);
+	}
 
 	/* Now compute u = (t + ((t*mprime) & mask)*m) >> 64.
 	The mask is fixed at 2**64-1. Because it is a 64-bit
 	quantity, it suffices to compute the low-order 64
 	bits of t*mprime, which means we can ignore thi. */
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++)	tm[i] = tlo[i] * mprime[i];
 
-	tm = tlo * mprime;
-	
-	//there is an optimization to be made here, tm = lo64(tlo * mprime)
-	//so tm * mod = lo64(tlo * mprime) * mod
-	//but mprime*mod is constant for a given mod
-	//is there a way to reduce the amount of work from this?
-	//multiply64By64PlusLo(tm, mod, &tlo, &tmmhi);
-	multiply64By64PlusHi(tm, mod, &tlo, &thi);//tlo is not used
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++) thi[i] += __umul64hi(tm[i], mod[i]);
 	//also if mod is < 2^63 this can't overflow
-	
+
+
 	//assumes mod < 2^63, WILL NOT WORK if mod > 2^63 because overflow can exist in above addition in that case
 	//if (thi >= mod) thi -= mod;
 	//in addition to mitigating most GPUs' poor conditional branching performance, unconditional code execution is also resistant to side-channel attacks
-	thi = thi - (mod & -((thi >= mod)));
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++) thi[i] = thi[i] - (mod[i] & -((thi[i] >= mod[i])));
 
-	output = thi;
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++) output[i] = thi[i];
 }
 
 //using left-to-right binary exponentiation
@@ -339,41 +368,39 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
 //now uses quarternary exponentiation, in an effort to halve the number of multplications required when exponent and bitmask match
-__device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int shiftToLittleBits, uint64 & output) {
+__device__ void modExpLeftToRight(const uint64 & exp, const uint64 mod[7], int shiftToLittleBits, uint64 * output) {
 
 	if (!exp) {
 		//no need to set output to anything as it is already 1
 		return;
 	}
 
-	uint64 rInverse, mPrime;
+	uint64 rInverse[7], mPrime[7];
 
 	//finds rInverse*2^64 - mPrime*mod = 1
-	xbinGCD(int64MaxBit, mod, &rInverse, &mPrime);
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++) xbinGCD(int64MaxBit, mod[i], &rInverse[i], &mPrime[i]);
 
-	uint64 result;
+	uint64 result[7];
+	uint64 baseNonZeroPowers[3][7];
 
-	uint64 maxMod = int64MaxBit % mod;
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++) {
+		uint64 maxMod = int64MaxBit % mod[i];
+		maxMod <<= 1;
+		if (maxMod > mod[i]) maxMod -= mod[i];
+		//baseSystem*2^64 % mod
+		modMultiply64Bit(maxMod, baseSystem, mod[i], maxMod, baseNonZeroPowers[0][i]);
+		//save this to use in loop
+	}
 
-	maxMod <<= 1;
-	
-	if (maxMod > mod) maxMod -= mod;
-
-	//baseSystem*2^64 % mod
-	modMultiply64Bit(maxMod, baseSystem, mod, maxMod, result);
-
-	//save this to use in loop
-	uint64 baseBar = result;
-
-	//int shiftToLittleBits = 62 - __clzll(highestBitMask);
-
-	uint64 baseNonZeroPowers[3];
-	baseNonZeroPowers[0] = baseBar;
-	montgomeryMult(baseBar, baseBar, mod, mPrime, baseNonZeroPowers[1]);//baseNonZeroPowers[1] = baseBar^2
-	montgomeryMult(baseNonZeroPowers[1], baseBar, mod, mPrime, baseNonZeroPowers[2]);//baseNonZeroPowers[2] = baseBar^3
+	montgomeryMult(baseNonZeroPowers[0], baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[1]);//baseNonZeroPowers[1] = baseBar^2
+	montgomeryMult(baseNonZeroPowers[1], baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[2]);//baseNonZeroPowers[2] = baseBar^3
 
 	int selector = ((exp >> shiftToLittleBits) & 3) - 1;
-	result = baseNonZeroPowers[selector];
+
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++) result[i] = baseNonZeroPowers[selector][i];
 
 	while (shiftToLittleBits) {
 
@@ -391,25 +418,31 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 	}
 
 	//convert result out of montgomery form
-	modMultiply64Bit(result, rInverse, mod, maxMod, result);
+	uint64 ones[7] = { 1, 1, 1, 1, 1, 1, 1 };
+	montgomeryMult(result, ones, mod, mPrime, result);
 
-	output = result;
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++) output[i] = result[i];
 }
 
 //find ( baseSystem^n % mod ) / mod and add to partialSum
 //experimented with placing forceinline and noinline on various functions again
 //with new changes, noinline now has most effect here, no idea why
-__device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint64 & mod, double *partialSum, int shift, const int & negative) {
-	uint64 expModResult = 1;
+__device__ __noinline__ void fractionalPartOfSum(const uint64 exp, const uint64 mod[7], double * partialSum, int shift, const int & negative) {
+	uint64 expModResult[7] = { 1, 1, 1, 1, 1, 1, 1 };
 	modExpLeftToRight(exp, mod, shift, expModResult);
 	//if k is odd, then sumTerm will be negative
 	//which just means we need to invert it about the modulus
-	if (negative) expModResult = mod - expModResult;
+	if (negative) for(int i = 0; i < 7; i++) expModResult[i] = mod[i] - expModResult[i];
 
-	double sumTerm = (((double)expModResult) / ((double)mod));
-	
-	*partialSum += sumTerm;
-	if((*partialSum) >= 1.0) *partialSum -= (int)(*partialSum);
+	double sumTerm[7];
+
+#pragma UNROLL 7
+	for (int i = 0; i < 7; i++) {
+		sumTerm[i] = (((double)expModResult[i]) / ((double)mod[i]));
+		partialSum[i] += sumTerm[i];
+		if ((partialSum[i]) >= 1.0) partialSum[i] -= (int)(partialSum[i]);
+	}
 }
 
 //stride over all parts of summation in bbp formula where k <= n
@@ -424,20 +457,15 @@ __device__ void bbp(uint64 n, uint64 start, uint64 end, int gridId, uint64 strid
 		shift *= (shift > 0);
 		//if shift is odd round up to nearest multiple of 2
 		shift += shift & 1;
-		uint64 mod = 4 * k + 1;
+		uint64 mod[7];
+		mod[0] = 4 * k + 1;
+		mod[1] = mod[0] + 2;//4k + 3
+		mod[2] = 10 * k + 1;
+		mod[3] = mod[2] + 2;//10k + 3
+		mod[4] = mod[3] + 2;//10k + 5
+		mod[5] = mod[4] + 2;//10k + 7
+		mod[6] = mod[5] + 2;//10k + 9
 		fractionalPartOfSum(exp, mod, output->s, shift, k & 1);
-		mod += 2;//4k + 3
-		fractionalPartOfSum(exp, mod, output->s + 1, shift, k & 1);
-		mod = 10 * k + 1;
-		fractionalPartOfSum(exp, mod, output->s + 2, shift, k & 1);
-		mod += 2;//10k + 3
-		fractionalPartOfSum(exp, mod, output->s + 3, shift, k & 1);
-		mod += 2;//10k + 5
-		fractionalPartOfSum(exp, mod, output->s + 4, shift, k & 1);
-		mod += 2;//10k + 7
-		fractionalPartOfSum(exp, mod, output->s + 5, shift, k & 1);
-		mod += 2;//10k + 9
-		fractionalPartOfSum(exp, mod, output->s + 6 , shift, k & 1);
 		if (!progressCheck) {
 			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
 			*progress = k;
