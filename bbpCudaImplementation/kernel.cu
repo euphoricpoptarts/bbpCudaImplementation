@@ -492,7 +492,7 @@ __device__ void xbinGCD(uint64 a, uint64 b, uint64 *pu, uint64 *pv)
 //slightly modified to use more efficient 64 bit multiply-adds in PTX assembly
 __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mprime, uint64 & output) {
 
-	uint64 thi = 0, tlo = 0, tm = 0;
+	uint64 tlo = 0, tm = 0;
 	//INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, tmmlo = 0, uhi = 0, ulo = 0, ov = 0;
 
 	//printf("\nmontmul, abar = %016llx, bbar   = %016llx\n", abar, bbar);
@@ -500,14 +500,12 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 
 	/* t = abar*bbar. */
 
-	multiply64By64(abar, bbar, &tlo, &thi);
+	multiply64By64(abar, bbar, &tlo, &output);
 
 	//unless tlo is zero here, there will always be a carry from tm*mod + tlo
-	uint64 lowerCarry = (tlo > 0);
-
 	//this would only be a problem if thi was 2^64 - 1
 	//which can never occur if mod is representable in an unsigned long long
-	thi += lowerCarry;
+	output += !!tlo;
 
 	/* Now compute u = (t + ((t*mprime) & mask)*m) >> 64.
 	The mask is fixed at 2**64-1. Because it is a 64-bit
@@ -521,15 +519,13 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 	//but mprime*mod is constant for a given mod
 	//is there a way to reduce the amount of work from this?
 	//multiply64By64PlusLo(tm, mod, &tlo, &tmmhi);
-	multiply64By64PlusHi(tm, mod, &tlo, &thi);//tlo is not used
+	multiply64By64PlusHi(tm, mod, &tlo, &output);//tlo is not used
 	//also if mod is < 2^63 this can't overflow
 	
 	//assumes mod < 2^63, WILL NOT WORK if mod > 2^63 because overflow can exist in above addition in that case
 	//if (thi >= mod) thi -= mod;
 	//in addition to mitigating most GPUs' poor conditional branching performance, unconditional code execution is also resistant to side-channel attacks
-	thi = thi - (mod & -((thi >= mod)));
-
-	output = thi;
+	output = output - (mod & -((output >= mod)));
 }
 
 //using left-to-right binary exponentiation
@@ -548,8 +544,7 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 
 	//finds rInverse*2^64 - mPrime*mod = 1
 	xbinGCD(int64MaxBit, mod, &rInverse, &mPrime);
-
-	uint64 result;
+	uint64 baseNonZeroPowers[3];
 
 	uint64 maxMod = int64MaxBit % mod;
 
@@ -558,25 +553,18 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 	if (maxMod > mod) maxMod -= mod;
 
 	//baseSystem*2^64 % mod
-	modMultiply64Bit(maxMod, baseSystem, mod, maxMod, result);
+	modMultiply64Bit(maxMod, baseSystem, mod, maxMod, baseNonZeroPowers[0]);
 
-	//save this to use in loop
-	uint64 baseBar = result;
-
-	//int shiftToLittleBits = 62 - __clzll(highestBitMask);
-
-	uint64 baseNonZeroPowers[3];
-	baseNonZeroPowers[0] = baseBar;
-	montgomeryMult(baseBar, baseBar, mod, mPrime, baseNonZeroPowers[1]);//baseNonZeroPowers[1] = baseBar^2
-	montgomeryMult(baseNonZeroPowers[1], baseBar, mod, mPrime, baseNonZeroPowers[2]);//baseNonZeroPowers[2] = baseBar^3
+	montgomeryMult(baseNonZeroPowers[0], baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[1]);//baseNonZeroPowers[1] = baseBar^2
+	montgomeryMult(baseNonZeroPowers[1], baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[2]);//baseNonZeroPowers[2] = baseBar^3
 
 	int selector = ((exp >> shiftToLittleBits) & 3) - 1;
-	result = baseNonZeroPowers[selector];
+	output = baseNonZeroPowers[selector];
 
 	while (shiftToLittleBits) {
 
-		montgomeryMult(result, result, mod, mPrime, result);//result^2
-		montgomeryMult(result, result, mod, mPrime, result);//result^4
+		montgomeryMult(output, output, mod, mPrime, output);//result^2
+		montgomeryMult(output, output, mod, mPrime, output);//result^4
 
 		shiftToLittleBits -= 2;
 
@@ -584,14 +572,12 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 
 		if (quarternaryDigit) {
 			selector = quarternaryDigit - 1;
-			montgomeryMult(result, baseNonZeroPowers[selector], mod, mPrime, result);//result*base
+			montgomeryMult(output, baseNonZeroPowers[selector], mod, mPrime, output);//result*base
 		}
 	}
 
 	//convert result out of montgomery form
-	modMultiply64Bit(result, rInverse, mod, maxMod, result);
-
-	output = result;
+	modMultiply64Bit(output, rInverse, mod, maxMod, output);
 }
 
 //find ( baseSystem^n % mod ) / mod and add to partialSum
