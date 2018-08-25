@@ -105,19 +105,20 @@ __device__ void multiply64By64(uint64 multiplicand, uint64 multiplier, uint64 * 
 		: "l"(multiplicand), "l"(multiplier));
 }
 
-//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
-__device__ void multiply64By64PlusHi(uint64 multiplicand, uint64 multiplier, uint64 * lo, uint64 * hi) {
+//uses 32 bit multiplications to compute the highest 64 bits of multiplying 2 64 bit numbers together
+//adding it to value currently in hi
+__device__ void multiply64By64PlusHi(uint64 multiplicand, uint64 multiplier, uint64 * hi) {
 
 	//a : multiplicand
 	//b : multiplier
 	//_lo : low 32 bits of result
 	//_hi : high 32 bits of result
 	asm("{\n\t"
-		".reg .u32          t0, t1, t2, t3, v0, v1, v2, v3;\n\t"
-		"mov.b64           {t2, t3}, %4;\n\t"
-		"mov.b64           {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
-		"mov.b64           {v2, v3}, %3;\n\t" //splits b into hi and lo 32 bit words
-		"mul.lo.u32         t0, v0, v2;    \n\t" //lolo = lo(alo*blo)
+		".reg .u32          t1, t2, t3, v0, v1, v2, v3;\n\t"
+		"mov.b64           {t2, t3}, %3;\n\t"
+		"mov.b64           {v0, v1}, %1;\n\t" //splits a into hi and lo 32 bit words
+		"mov.b64           {v2, v3}, %2;\n\t" //splits b into hi and lo 32 bit words
+		//"mul.lo.u32         t0, v0, v2;    \n\t" //lolo = lo(alo*blo)
 		"mul.hi.u32         t1, v0, v2;    \n\t" //lohi = hi(alo*blo)
 		"mad.lo.cc.u32      t1, v0, v3, t1;\n\t" //lohi = lo(alo*bhi) + hi(alo*blo) (with carry flag)
 		"madc.hi.cc.u32     t2, v0, v3, t2;\n\t" //hilo = starting_value + hi(alo*bhi) + 1 carry (with carry flag)
@@ -127,10 +128,10 @@ __device__ void multiply64By64PlusHi(uint64 multiplicand, uint64 multiplier, uin
 		"addc.u32           t3, t3, 0;\n\t" //hihi = starting_value + hi(ahi*bhi) + 2 carries (no need to set carry)
 		"mad.lo.cc.u32      t2, v1, v3, t2;\n\t" //hilo = starting_value + lo(ahi*bhi) + hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
 		"addc.u32           t3, t3, 0;\n\t" //hihi = starting_value + hi(ahi*bhi) + 3 carries
-		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
-		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		//"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
+		"mov.b64            %0, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
 		"}"
-		: "=l"(*lo), "=l"(*hi)
+		: "=l"(*hi)
 		: "l"(multiplicand), "l"(multiplier), "l"(*hi));
 }
 
@@ -322,7 +323,7 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 	//but mprime*mod is constant for a given mod
 	//is there a way to reduce the amount of work from this?
 	//multiply64By64PlusLo(tm, mod, &tlo, &tmmhi);
-	multiply64By64PlusHi(tm, mod, &tlo, &output);//tlo is not used
+	multiply64By64PlusHi(tm, mod, &output);//tlo is not used
 	//also if mod is < 2^63 this can't overflow
 	
 	//assumes mod < 2^63, WILL NOT WORK if mod > 2^63 because overflow can exist in above addition in that case
@@ -630,9 +631,9 @@ int main()
 		std::thread handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];
 
-		chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
-
 		PPROGRESSDATA prog = setupProgress();
+
+		chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
 
 		if (prog->error != cudaSuccess) return 1;
 		prog->begin = &start;
