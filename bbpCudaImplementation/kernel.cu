@@ -105,6 +105,28 @@ __device__ void multiply64By64(uint64 multiplicand, uint64 multiplier, uint64 * 
 		: "l"(multiplicand), "l"(multiplier));
 }
 
+//uses 32 bit multiplications to compute the lowest 64 bits of multiplying 2 64 bit numbers together
+//faster than multiplicand*multiplier
+__device__ void multiply64By64LoOnly(uint64 multiplicand, uint64 multiplier, uint64 * lo) {
+
+	//a : multiplicand
+	//b : multiplier
+	//_lo : low 32 bits of result
+	//_hi : high 32 bits of result
+	asm("{\n\t"
+		".reg .u32          t0, t1, v0, v1, v2, v3;\n\t"
+		"mov.b64           {v0, v1}, %1;\n\t" //splits a into hi and lo 32 bit words
+		"mov.b64           {v2, v3}, %2;\n\t" //splits b into hi and lo 32 bit words
+		"mul.lo.u32         t0, v0, v2;    \n\t" //lolo = lo(alo*blo)
+		"mul.hi.u32         t1, v0, v2;    \n\t" //lohi = hi(alo*blo)
+		"mad.lo.cc.u32      t1, v0, v3, t1;\n\t" //lohi = lo(alo*bhi) + hi(alo*blo) (with carry flag)
+		"mad.lo.u32         t1, v1, v2, t1;\n\t" //lohi = lo(ahi*blo) + lo(alo*bhi) + hi(alo*blo) (with carry flag)
+		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
+		"}"
+		: "=l"(*lo)
+		: "l"(multiplicand), "l"(multiplier));
+}
+
 //uses 32 bit multiplications to compute the highest 64 bits of multiplying 2 64 bit numbers together
 //adding it to value currently in hi
 __device__ void multiply64By64PlusHi(uint64 multiplicand, uint64 multiplier, uint64 * hi) {
@@ -316,7 +338,8 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 	quantity, it suffices to compute the low-order 64
 	bits of t*mprime, which means we can ignore thi. */
 
-	tm = tlo * mprime;
+	//tm = tlo * mprime;
+	multiply64By64LoOnly(tlo, mprime, &tm);
 	
 	//there is an optimization to be made here, tm = lo64(tlo * mprime)
 	//so tm * mod = lo64(tlo * mprime) * mod
