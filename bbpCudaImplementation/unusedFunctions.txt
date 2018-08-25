@@ -1,0 +1,197 @@
+__device__ const int typeSize = sizeof(uint64) * 8 - 1;
+__device__ const uint64 multiplyModCond = 0x4000000000000000;//2^62
+
+//not actually quick
+__device__ void quickMod(uint64 input, const uint64 mod, uint64 *output) {
+
+	/*INT_64 copy = input;
+	INT_64 test = input % mod;*/
+	uint64 temp = mod;
+	while (temp < input && !(temp&int64MaxBit)) temp <<= 1;
+	if (temp > input) temp >>= 1;
+	while (input >= mod && temp >= mod) {
+		if (input >= temp) input -= temp;
+		temp >>= 1;
+	}
+	/*if (input != test && !atomicAdd(&printOnce,1))
+	{
+	printf("input %llu mod %llu error\n", copy, mod);
+	printOnce = 1;
+	}*/
+	*output = input;
+}
+
+//binary search to find highest 1 bit in multiplier
+__device__ void findMultiplierHighestBit(const uint64 multiplier, uint64 *output) {
+
+	//if no bits are 1 then highest bit doesn't exist
+	if (!multiplier) {
+		*output = 0;
+		return;
+	}
+
+	int highestBitLocMax = typeSize;
+	int highestBitLocMin = 0;
+
+	int middle = (highestBitLocMax + highestBitLocMin) >> 1;
+
+	uint64 highestBit = 1L;
+	highestBit <<= middle;
+
+	int less = highestBit <= multiplier;
+
+	while (!((highestBit << 1) > multiplier && less)) {
+		if (less) highestBitLocMin = middle + 1;
+		else highestBitLocMax = middle - 1;
+		middle = (highestBitLocMax + highestBitLocMin) >> 1;
+		//this might not look necessary but it is
+		highestBit = 1L;
+		highestBit <<= middle;
+		less = highestBit <= multiplier;
+	}
+
+	/*unsigned long long highestBit2 = 0x8000000000000000;
+
+	while (highestBit2 > multiplier) highestBit2 >>= 1;
+
+	if (highestBit != highestBit2 && !printOnce) {
+	printf("multiplier %d error; highestBit %d; highestBit2 %d\n", multiplier, highestBit, highestBit2);
+	printOnce = 1;
+	}*/
+
+	*output = highestBit;
+}
+
+//hacker's delight method to find highest bit in a long long (it just works)
+//http://graphics.stanford.edu/~seander/bithacks.html
+//just barely faster than built-in CUDA __clzll
+__device__ void findMultiplierHighestBitHackersDelight(uint64 multiplier, uint64 *output) {
+
+	multiplier |= multiplier >> 1;
+	multiplier |= multiplier >> 2;
+	multiplier |= multiplier >> 4;
+	multiplier |= multiplier >> 8;
+	multiplier |= multiplier >> 16;
+	multiplier |= multiplier >> 32;
+
+	*output = multiplier ^ (multiplier >> 1);
+
+}
+
+__device__ void modMultiplyLeftToRight(const uint64 multiplicand, const uint64 multiplier, uint64 mod, uint64 *output) {
+	*output = multiplicand;
+
+	uint64 highestBitMask = 0;
+
+	findMultiplierHighestBitHackersDelight(multiplier, &highestBitMask);
+
+	while (highestBitMask > 1) {
+		//only perform modulus operation during loop if result is >= (TYPE maximum + 1)/4 (in order to prevent overflowing)
+		if (*output >= multiplyModCond) *output %= mod;
+		*output <<= 1;
+		highestBitMask >>= 1;
+		if (multiplier&highestBitMask)	*output += multiplicand;
+	}
+
+	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
+	*output %= mod;
+}
+
+__device__ void modMultiplyRightToLeft(uint64 multiplicand, uint64 multiplier, uint64 mod, uint64 *output) {
+	uint64 result = 0;
+
+	uint64 mask = 1;
+
+	while (multiplier > 0) {
+		if (multiplier&mask) {
+			result += multiplicand;
+
+			//only perform modulus operation during loop if result is >= (INT_64 maximum + 1)/2 (in order to prevent overflowing)
+			if (result >= mod) result -= mod;
+		}
+		multiplicand <<= 1;
+		if (multiplicand >= mod) multiplicand -= mod;
+		multiplier >>= 1;
+	}
+
+	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
+	result %= mod;
+	*output = result;
+}
+
+//an experiment to see if reducing the number of arguments saves any time
+__device__ void modSquare64Bit(uint64 *number, uint64 mod, uint64 maxMod) {
+	uint64	hi = __umul64hi(*number, *number);
+	*number = (*number * *number) % mod;
+	while (hi) {
+		uint64 lo = hi * maxMod;
+
+		//multiplyModCond should be (2^64)/(number of loop iterations)
+		//where loop iterations are roughly 64/(64 - log2(mod))
+		//THEREFORE THIS SHOULD NOT BE A COMPILE TIME CONSTANT
+		//but a runtime variable set at launch based upon the maximum mod that will be passed to this function
+		//for 2^40 number of loops is 2, for 2^50 number of loops is 4
+		if (lo > multiplyModCond) lo %= mod;
+
+		*number += lo;
+		hi = __umul64hi(hi, maxMod);
+	}
+	if(*number >= mod) *number %= mod;
+}
+
+//leverages a machine instruction that returns the highest 64 bits of the multiplication operation
+//multiplicand and multiplier should always be less than mod (may work correctly even if this is not the case)
+//uses bitshifts and subtraction to avoid multiplications and modulus respectively inside the loop
+//loops more times than other version
+//slower than other version (but could be faster if mod is close to 2^63)
+__device__ void modMultiply64BitAlt(uint64 multiplicand, uint64 multiplier, uint64 mod, const int modMaxBitPos, uint64 *output) {
+	uint64	hi = __umul64hi(multiplicand, multiplier);
+	uint64 result = (multiplicand * multiplier) % mod;
+	int count = 64;
+	while (count > 0) {
+
+		//determine the number of bits to shift hi so that 2*mod > hi > mod
+		int dif = __clzll(hi) - modMaxBitPos;
+
+		if (dif > count) dif = count;
+
+		//hi is the highest 64 bits of multiplicand*multiplier
+		//so hi is actually hi*2^64
+		//takes bits from 2^64 and gives them to hi until 2^64 is reduced to 2^0
+		//each step of loop only gives as many bits to hi as to satisfy 2*mod > hi > mod
+		hi <<= dif;
+
+		if(hi >= mod) hi -= mod;
+
+		count -= dif;
+	}
+	*output = (result + hi);
+	if(*output > mod) *output -= mod;
+}
+
+//perform right-to-left binary exponention taking modulus of both base and result at each step
+//64 bit integers are required to accurately find the modular exponents of numbers when mod is >= ~10e6
+//however, with CUDA 64 bit integers are implemented at compile time as two 32 bit integers
+//this produces about a 10x slowdown over computations using 32 bit integers
+__device__ void modExp(unsigned long long base, long exp, long mod, long *output) {
+	const unsigned long mask = 1;
+	unsigned long long result = 1;
+
+	//only perform modulus operation during loop if result or base is >= 2^32 (in order to prevent either from overflowing)
+	//this saves 30% computation time over performing modulus in every loop iteration
+	const unsigned long long modCond = 0x100000000;//2^32
+
+	while (exp > 0) {
+		if (exp&mask) {
+			result *= base;
+			if (result >= modCond) result %= mod;
+		}
+		base *= base;
+		if (base >= modCond) base %= mod;
+		exp >>= 1;
+	}
+
+	//modulus must be taken after loop as it hasn't necessarily been taken during last loop iteration
+	result %= mod;
+	*output = result;
+}
