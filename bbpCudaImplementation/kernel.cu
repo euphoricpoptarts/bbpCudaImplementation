@@ -22,9 +22,9 @@ namespace chr = std::chrono;
 const int totalGpus = 2;
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
-const int threadCountPerBlock = 128;
+const int xThreadCountPerBlock = 128;
 //this is more difficult to optimize but seems to not like odd numbers
-const int blockCount = 1120;
+const int blockCount = 2240;
 
 __device__ __constant__ const uint64 baseSystem = 1024;
 //__device__  __constant__ const int baseExpOf2 = 10;
@@ -596,9 +596,43 @@ __device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint6
 	if((*partialSum) >= 1.0) *partialSum -= (int)(*partialSum);
 }
 
+__device__ void modFinder(int y, const uint64 & start, const uint64 & stride, uint64 & mod, uint64 & modIncrement) {
+	switch (y) {
+	case 0:
+		mod = 4 * start + 1;
+		modIncrement = 4 * stride;
+		break;
+	case 1:
+		mod = 4 * start + 3;
+		modIncrement = 4 * stride;
+		break;
+	case 2:
+		mod = 10 * start + 1;
+		modIncrement = 10 * stride;
+		break;
+	case 3:
+		mod = 10 * start + 3;
+		modIncrement = 10 * stride;
+		break;
+	case 4:
+		mod = 10 * start + 5;
+		modIncrement = 10 * stride;
+		break;
+	case 5:
+		mod = 10 * start + 7;
+		modIncrement = 10 * stride;
+		break;
+	case 6:
+		mod = 10 * start + 9;
+		modIncrement = 10 * stride;
+	}
+}
+
 //stride over all parts of summation in bbp formula where k <= n
 //to compute partial sJ sums
-__device__ void bbp(uint64 n, uint64 start, uint64 end, int gridId, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
+__device__ void bbp(uint64 n, uint64 start, uint64 end, uint64 stride, double * output, volatile uint64* progress, int progressCheck, int y) {
+	uint64 mod, modInc;
+	modFinder(y, start, stride, mod, modInc);
 	for (uint64 k = start; k <= end; k += stride) {
 		uint64 exp = n - k;
 		//shift represents number of bits needed to shift highest set bit pair in exp
@@ -608,35 +642,25 @@ __device__ void bbp(uint64 n, uint64 start, uint64 end, int gridId, uint64 strid
 		shift *= (shift > 0);
 		//if shift is odd round up to nearest multiple of 2
 		shift += shift & 1;
-		uint64 mod = 4 * k + 1;
-		fractionalPartOfSum(exp, mod, output->s, shift, k & 1);
-		mod += 2;//4k + 3
-		fractionalPartOfSum(exp, mod, output->s + 1, shift, k & 1);
-		mod = 10 * k + 1;
-		fractionalPartOfSum(exp, mod, output->s + 2, shift, k & 1);
-		mod += 2;//10k + 3
-		fractionalPartOfSum(exp, mod, output->s + 3, shift, k & 1);
-		mod += 2;//10k + 5
-		fractionalPartOfSum(exp, mod, output->s + 4, shift, k & 1);
-		mod += 2;//10k + 7
-		fractionalPartOfSum(exp, mod, output->s + 5, shift, k & 1);
-		mod += 2;//10k + 9
-		fractionalPartOfSum(exp, mod, output->s + 6 , shift, k & 1);
+		fractionalPartOfSum(exp, mod, output, shift, k & 1);
 		if (!progressCheck) {
 			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
 			*progress = k;
 		}
+		mod += modInc;
 	}
 }
 
 //determine from thread and block position where to begin stride
 //only one of the threads per kernel (AND ONLY ON GPU0) will report progress
+//threadIdx.x determines where to begin stride
+//threadIdx.y determines which term of sum to compute
 __global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 digit, int gpuNum, uint64 begin, uint64 end, uint64 stride)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
 	uint64 start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
-	bbp(digit, start, end, gridId, stride, c + gridId, progress, progressCheck);
+	bbp(digit, start, end, stride, &c[gridId].s[threadIdx.y], progress, progressCheck, threadIdx.y);
 }
 
 //stride over current leaves of reduce tree
@@ -804,7 +828,7 @@ void checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double *
 int main()
 {
 	try {
-		const int arraySize = threadCountPerBlock * blockCount;
+		const int arraySize = xThreadCountPerBlock * blockCount;
 		uint64 hexDigitPosition;
 		std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
 		std::cin >> hexDigitPosition;
@@ -1034,6 +1058,7 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 	sJ *dev_c = 0;
 	sJ* c = new sJ[1];
 	sJ *dev_ex = 0;
+	dim3 threadsPerBlock(xThreadCountPerBlock, 7);
 
 	cudaError_t cudaStatus;
 	
@@ -1076,7 +1101,7 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 		if (end > digit) end = digit;
 
 		// Launch a kernel on the GPU with one thread for each element.
-		bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, currProgDevice, digit, gpu, begin, end, stride);
+		bbpKernel << <blockCount, threadsPerBlock >> > (dev_c, currProgDevice, digit, gpu, begin, end, stride);
 
 		// Check for any errors launching the kernel
 		cudaStatus = cudaGetLastError();
