@@ -257,7 +257,8 @@ __device__ void modMultiply64Bit(uint64 multiplicand, uint64 multiplier, const u
 	output = result;
 }
 
-//greatest common denominator method pulled unmodified from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
+//greatest common denominator method pulled from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
+//modified for use-case where R is always 2^64
 
 /* C program implementing the extended binary GCD algorithm. C.f.
 http://www.ucl.ac.uk/~ucahcjm/combopt/ext_gcd_python_programs.pdf. This
@@ -279,21 +280,22 @@ value.
 Parameter a is half what it "should" be. In other words, this function
 does not find u and v st. u*a - v*b = 1, but rather u*(2a) - v*b = 1. */
 
-__device__ void xbinGCD(uint64 a, uint64 b, uint64 *pu, uint64 *pv)
+__device__ void xbinGCD(uint64 b, uint64 *pv)
 {
 	uint64 alpha, beta, u, v;
 	//printf("Doing GCD(%llx, %llx)\n", a, b);
 
 	u = 1; v = 0;
-	alpha = a; beta = b;         // Note that alpha is
+	alpha = int64MaxBit; beta = b;         // Note that alpha is
 								 // even and beta is odd.
 
 								 /* The invariant maintained from here on is:
 								 2a = u*2*alpha - v*beta. */
 
 								 // printf("Before, a u v = %016llx %016llx %016llx\n", a, u, v);
-	while (a > 0) {
-		a = a >> 1;
+	int stop = 64;
+	while (stop) {
+		stop--;
 		if ((u & 1) == 0) {             // Delete a common
 			u = u >> 1; v = v >> 1;      // factor of 2 in
 		}                               // u and v.
@@ -307,7 +309,6 @@ __device__ void xbinGCD(uint64 a, uint64 b, uint64 *pu, uint64 *pv)
 	}
 
 	// printf("At end,    a u v = %016llx %016llx %016llx\n", a, u, v);
-	*pu = u;
 	*pv = v;
 	return;
 }
@@ -319,9 +320,6 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 
 	uint64 tlo = 0, tm = 0;
 	//INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, tmmlo = 0, uhi = 0, ulo = 0, ov = 0;
-
-	//printf("\nmontmul, abar = %016llx, bbar   = %016llx\n", abar, bbar);
-	//printf("            m = %016llx, mprime = %016llx\n", m, mprime);
 
 	/* t = abar*bbar. */
 
@@ -366,10 +364,10 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 		return;
 	}
 
-	uint64 rInverse, mPrime;
+	uint64 mPrime;
 
 	//finds rInverse*2^64 - mPrime*mod = 1
-	xbinGCD(int64MaxBit, mod, &rInverse, &mPrime);
+	xbinGCD(mod, &mPrime);
 	uint64 baseNonZeroPowers[3];
 
 	uint64 maxMod = int64MaxBit % mod;
@@ -384,8 +382,8 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 	montgomeryMult(baseNonZeroPowers[0], baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[1]);//baseNonZeroPowers[1] = baseBar^2
 	montgomeryMult(baseNonZeroPowers[1], baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[2]);//baseNonZeroPowers[2] = baseBar^3
 
-	int selector = ((exp >> shiftToLittleBits) & 3) - 1;
-	output = baseNonZeroPowers[selector];
+	int quarternaryDigit = ((exp >> shiftToLittleBits) & 3);
+	output = baseNonZeroPowers[quarternaryDigit - 1];
 
 	while (shiftToLittleBits) {
 
@@ -394,11 +392,10 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 
 		shiftToLittleBits -= 2;
 
-		int quarternaryDigit = (exp >> shiftToLittleBits) & 3;
+		quarternaryDigit = (exp >> shiftToLittleBits) & 3;
 
 		if (quarternaryDigit) {
-			selector = quarternaryDigit - 1;
-			montgomeryMult(output, baseNonZeroPowers[selector], mod, mPrime, output);//result*base
+			montgomeryMult(output, baseNonZeroPowers[quarternaryDigit - 1], mod, mPrime, output);//result*base
 		}
 	}
 
@@ -419,12 +416,12 @@ __device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint6
 	double sumTerm = (((double)expModResult) / ((double)mod));
 	
 	*partialSum += sumTerm;
-	if((*partialSum) >= 1.0) *partialSum -= (int)(*partialSum);
+	if((*partialSum) >= 1.0) *partialSum -= 1.0;
 }
 
 //stride over all parts of summation in bbp formula where k <= n
 //to compute partial sJ sums
-__device__ void bbp(uint64 n, uint64 start, uint64 end, int gridId, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
+__device__ void bbp(uint64 n, uint64 start, uint64 end, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
 	for (uint64 k = start; k <= end; k += stride) {
 		uint64 exp = n - k;
 		//shift represents number of bits needed to shift highest set bit pair in exp
@@ -462,7 +459,7 @@ __global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 digit, int gp
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
 	uint64 start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
-	bbp(digit, start, end, gridId, stride, c + gridId, progress, progressCheck);
+	bbp(digit, start, end, stride, c + gridId, progress, progressCheck);
 }
 
 //stride over current leaves of reduce tree
