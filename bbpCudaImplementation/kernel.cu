@@ -5,15 +5,14 @@
 
 #include <stdio.h>
 #include <math.h>
-#include <time.h>
 #include <chrono>
 #include <thread>
 #include <deque>
 #include <atomic>
-#include <fstream>
 #include <iostream>
 #include <filesystem>
 #include <string>
+#include <algorithm>
 
 #define uint64 unsigned long long
 
@@ -568,22 +567,24 @@ uint64 finalizeDigit(sJ input, uint64 n) {
 	return (uint64)hexDigit;
 }
 
-void checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * previousTime) {
+int checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * previousTime) {
 	std::string target = "digit" + std::to_string(digit) + "Base";
 	std::string pToFile;
+	std::vector<std::string> matching;
 	int found = 0;
 	for (auto& element : std::experimental::filesystem::directory_iterator("progressCache")) {
 		std::string name = element.path().filename().string();
 		//filename begins with desired string
 		if (name.compare(0, target.length(), target) == 0) {
-			pToFile = element.path().string();
+			matching.push_back(element.path().string());
 			found = 1;
-		}
-		else if (found) {
-			break;
 		}
 	}
 	if (found) {
+		//sort and choose alphabetically last result
+		std::sort(matching.begin(), matching.end());
+		pToFile = matching.back();
+
 		int chosen = 0;
 		while (!chosen) {
 			chosen = 1;
@@ -593,22 +594,28 @@ void checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double *
 			std::cin >> choice;
 			if (choice == 'y') {
 				std::cout << "Loading cache and continuing computation." << std::endl;
-				try {
-					std::ifstream file;
-					file.open(pToFile);
+				FILE * cacheF = fopen(pToFile.c_str(), "r");
 
-					file >> *contFrom;
-
-					//theoretically the standard specifies that this works for doubles
-					//however msvc doesn't output correctly for doubles with hexfloat (it outputs as a float)
-					//but it appears to work correctly for reading into doubles as tested so far
-					file >> std::hexfloat >> *previousTime;
-					for (int i = 0; i < 7; i++) file >> std::hexfloat >> cache->s[i];
+				if (cacheF == NULL) {
+					std::cout << "Could not open " << pToFile << "!" << std::endl;
+					std::cout << "Beginning computation without reloading." << std::endl;
+					return 1;
 				}
-				catch(std::ifstream::failure& e) {
-					fprintf(stderr, "Error opening file %s\n", pToFile.c_str());
-					fprintf(stderr, "%s\n", e.what());
-					std::cout << "Could not reload cache. Beginning computation without reloading." << std::endl;
+
+				int readLines = 0;
+
+				readLines += fscanf(cacheF, "%llu", contFrom);
+
+				//theoretically the standard specifies that this works for doubles
+				//however msvc doesn't output correctly for doubles with hexfloat (it outputs as a float)
+				//but it appears to work correctly for reading into doubles as tested so far
+				readLines += fscanf(cacheF, "%la", previousTime);
+				for (int i = 0; i < 7; i++) readLines += fscanf(cacheF, "%la", &cache->s[i]);
+				fclose(cacheF);
+				//9 lines of data should have been read, 1 continuation point, 1 time, and 7 data points
+				if (readLines != 9) {
+					std::cout << "Data reading failed!" << std::endl;
+					return 1;
 				}
 			}
 			else if (choice == 'n') {
@@ -626,6 +633,7 @@ void checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double *
 	else {
 		std::cout << "No progress cache file found. Beginning computation without reloading." << std::endl;
 	}
+	return 0;
 }
 
 int main()
@@ -649,7 +657,9 @@ int main()
 		uint64 beginFrom = 0;
 		sJ cudaResult;
 		double previousTime = 0.0;
-		checkForProgressCache(sumEnd, &beginFrom, &cudaResult, &previousTime);
+		if (checkForProgressCache(sumEnd, &beginFrom, &cudaResult, &previousTime)) {
+			return 1;
+		}
 
 		std::thread handles[totalGpus];
 		BBPLAUNCHERDATA gpuData[totalGpus];
