@@ -605,10 +605,6 @@ int checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * 
 				int readLines = 0;
 
 				readLines += fscanf(cacheF, "%llu", contFrom);
-
-				//theoretically the standard specifies that this works for doubles
-				//however msvc doesn't output correctly for doubles with hexfloat (it outputs as a float)
-				//but it appears to work correctly for reading into doubles as tested so far
 				readLines += fscanf(cacheF, "%la", previousTime);
 				for (int i = 0; i < 7; i++) readLines += fscanf(cacheF, "%la", &cache->s[i]);
 				fclose(cacheF);
