@@ -404,7 +404,7 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 	}
 
 	//convert result out of montgomery form
-	modMultiply64Bit(output, rInverse, mod, maxMod, output);
+	montgomeryMult(output, 1, mod, mPrime, output);
 }
 
 //find ( baseSystem^n % mod ) / mod and add to partialSum
