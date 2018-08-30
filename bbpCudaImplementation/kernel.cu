@@ -84,24 +84,86 @@ __device__ void multiply64By64(uint64 multiplicand, uint64 multiplier, uint64 * 
 	//_lo : low 32 bits of result
 	//_hi : high 32 bits of result
 	asm("{\n\t"
-		".reg .u32          t0, t1, t2, t3, v0, v1, v2, v3;\n\t"
+		".reg .u64          m0;\n\t"
+		".reg .u32          t0, t1, t2, t3, v0, v1, v2, v3, p0, p1, c0;\n\t"
 		"mov.b64           {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
 		"mov.b64           {v2, v3}, %3;\n\t" //splits b into hi and lo 32 bit words
-		"mul.lo.u32         t0, v0, v2;    \n\t" //lolo = lo(alo*blo)
-		"mul.hi.u32         t1, v0, v2;    \n\t" //lohi = hi(alo*blo)
-		"mad.lo.cc.u32      t1, v0, v3, t1;\n\t" //lohi = lo(alo*bhi) + hi(alo*blo) (with carry flag)
-		"madc.hi.cc.u32     t2, v0, v3,  0;\n\t" //hilo = hi(alo*bhi) + 1 carry (with carry flag, as carry may need to propagate)
-		"madc.hi.u32        t3, v1, v3,  0;\n\t" //hihi = hi(ahi*bhi) + 1 carry (no need to set carry)
-		"mad.lo.cc.u32      t1, v1, v2, t1;\n\t" //lohi = lo(ahi*blo) + lo(alo*bhi) + hi(alo*blo) (with carry flag)
-		"madc.hi.cc.u32     t2, v1, v2, t2;\n\t" //hilo = hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
-		"addc.u32           t3, t3, 0;\n\t" //hihi = hi(ahi*bhi) + 2 carries (no need to set carry)
-		"mad.lo.cc.u32      t2, v1, v3, t2;\n\t" //hilo = lo(ahi*bhi) + hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
-		"addc.u32           t3, t3, 0;\n\t" //hihi = hi(ahi*bhi) + 3 carries
+		"mul.wide.u32       m0, v0, v2;    \n\t" //m0 = alo*blo
+		"mov.b64           {t0, t1}, m0;\n\t"//split m0 into lo and hi
+		"mul.wide.u32       m0, v0, v3;    \n\t" //m0 = alo*bhi
+		"mov.b64           {p0, p1}, m0;\n\t"
+		"add.cc.u32         t1, t1, p0;\n\t" //t1 = lo(alo*bhi) + hi(alo*blo)
+		"addc.cc.u32        t2, p1, 0;\n\t" //t2 = hi(alo*bhi)
+		"addc.u32           c0, 0, 0;\n\t"
+		"mul.wide.u32       m0, v1, v2;\n\t" //m0 = ahi*blo
+		"mov.b64           {p0, p1}, m0;\n\t"
+		"add.cc.u32         t1, t1, p0;\n\t" //lohi = lo(ahi*blo) + lo(alo*bhi) + hi(alo*blo) (with carry flag)
+		"addc.cc.u32        t2, t2, p1;\n\t" //hilo = hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
+		"addc.u32           c0, c0, 0;\n\t" 
+		"mul.wide.u32       m0, v1, v3;\n\t" //m0 = ahi*bhi
+		"mov.b64           {p0, p1}, m0;\n\t"
+		"add.cc.u32         t2, t2, p0;\n\t" //t2 = lo(ahi*bhi) + hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
+		"addc.u32           t3, p1, c0;\n\t" //t3 = hi(ahi*bhi) + 1 carry (no need to set carry)
 		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
 		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
 		"}"
 		: "=l"(*lo), "=l"(*hi)
 		: "l"(multiplicand), "l"(multiplier));
+}
+
+//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
+__device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
+
+	asm("{\n\t"
+		".reg .u64          m0, m1, m2;\n\t"
+		".reg .u32          t0, t1, t2, t3, v0, v1, c0;\n\t"
+		"mov.b64           {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
+		"mul.wide.u32       m0, v0, v0;    \n\t" //m0 = alo*alo
+		"mul.wide.u32       m1, v0, v1;    \n\t" //m1 = alo*ahi
+		"mul.wide.u32       m2, v1, v1;    \n\t" //m2 = ahi*ahi
+		"mov.b64           {t0, t1}, m0;\n\t"
+		"mov.b64           {t2, t3}, m2;\n\t"
+		"add.cc.u64         m1, m1, m1;\n\t" //because (ahi + alo)^2 = ahi^2 + 2*alo*ahi + alo^2, we must double m1
+		"addc.u32           c0,  0,  0;\n\t"
+		"mov.b64           {v0, v1}, m1;\n\t"
+		"add.cc.u32         t1, t1, v0;\n\t"
+		"addc.cc.u32        t2, t2, v1;\n\t"
+		"addc.u32           t3, t3, c0;\n\t"
+		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
+		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		"}"
+		: "=l"(*lo), "=l"(*hi)
+		: "l"(multiplicand));
+}
+
+//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
+__device__ void square64By64Karatsuba(uint64 multiplicand, uint64 * lo, uint64 * hi) {
+
+	asm("{\n\t"
+		".reg .u64          z0, z1, z2;\n\t"
+		".reg .u32          t0, t1, t2, t3, v0, v1;\n\t"
+		".reg .u32          p0;\n\t"
+		".reg .u32          m0, m1;\n\t"
+		"mov.b64           {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
+		"sad.u32            p0, v1, v0, 0;\n\t"
+		"mul.wide.u32       z1, p0, p0;\n\t" //z1 = abs(v1 - v0)^2
+		"mul.wide.u32       z0, v0, v0;    \n\t" //z0 = v0^2
+		"mul.wide.u32       z2, v1, v1;    \n\t" //z2 = v1^2
+		"mov.b64           {t0, t1}, z0;\n\t"
+		"mov.b64           {t2, t3}, z2;\n\t"
+		"add.cc.u64         z2, z0, z2;\n\t"
+		"addc.u32           t3, t3, 0;\n\t"
+		"sub.cc.u64         z1, z2, z1;\n\t"
+		"subc.u32           t3, t3, 0;\n\t"
+		"mov.b64           {m0, m1}, z1;\n\t"
+		"add.cc.u32         t1, t1, m0;\n\t"
+		"addc.cc.u32        t2, t2, m1;\n\t"
+		"addc.u32           t3, t3, 0;\n\t"
+		"mov.b64            %0, {t0, t1};\n\t"
+		"mov.b64            %1, {t2, t3};\n\t"
+		"}"
+		: "=l"(*lo), "=l"(*hi)
+		: "l"(multiplicand));
 }
 
 //uses 32 bit multiplications to compute the lowest 64 bits of multiplying 2 64 bit numbers together
@@ -352,6 +414,19 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 	output = output - (mod & -((output >= mod)));
 }
 
+//montgomery multiplication routine identical to above except for only being used when abar and bbar are known in advance to be the same
+//uses a faster multiplication routine for squaring than is possible while not squaring
+__device__ void montgomerySquare(uint64 abar, uint64 mod, uint64 mprime, uint64 & output) {
+
+	uint64 tlo = 0, tm = 0;
+
+	square64By64(abar, &tlo, &output);
+	output += !!tlo;
+	multiply64By64LoOnly(tlo, mprime, &tm);
+	multiply64By64PlusHi(tm, mod, &output);
+	output = output - (mod & -((output >= mod)));
+}
+
 //using left-to-right binary exponentiation
 //the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
@@ -367,6 +442,7 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 	uint64 mPrime;
 
 	//finds rInverse*2^64 - mPrime*mod = 1
+	//we only need mPrime though
 	xbinGCD(mod, &mPrime);
 	uint64 baseNonZeroPowers[3];
 
@@ -379,7 +455,7 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 	//baseSystem*2^64 % mod
 	modMultiply64Bit(maxMod, baseSystem, mod, maxMod, baseNonZeroPowers[0]);
 
-	montgomeryMult(baseNonZeroPowers[0], baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[1]);//baseNonZeroPowers[1] = baseBar^2
+	montgomerySquare(baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[1]);//baseNonZeroPowers[1] = baseBar^2
 	montgomeryMult(baseNonZeroPowers[1], baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[2]);//baseNonZeroPowers[2] = baseBar^3
 
 	int quarternaryDigit = ((exp >> shiftToLittleBits) & 3);
@@ -387,8 +463,8 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 
 	while (shiftToLittleBits) {
 
-		montgomeryMult(output, output, mod, mPrime, output);//result^2
-		montgomeryMult(output, output, mod, mPrime, output);//result^4
+		montgomerySquare(output, mod, mPrime, output);//result^2
+		montgomerySquare(output, mod, mPrime, output);//result^4
 
 		shiftToLittleBits -= 2;
 
