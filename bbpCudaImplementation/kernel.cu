@@ -111,7 +111,7 @@ __device__ void multiply64By64(uint64 multiplicand, uint64 multiplier, uint64 * 
 		: "l"(multiplicand), "l"(multiplier));
 }
 
-//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
+//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of squaring a 64 bit number
 __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
 
 	asm("{\n\t"
@@ -136,7 +136,8 @@ __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
 		: "l"(multiplicand));
 }
 
-//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
+//uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of squaring a 64 bit number
+//using karatsuba multiplication
 __device__ void square64By64Karatsuba(uint64 multiplicand, uint64 * lo, uint64 * hi) {
 
 	asm("{\n\t"
