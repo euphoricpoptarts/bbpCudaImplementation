@@ -84,26 +84,22 @@ __device__ void multiply64By64(uint64 multiplicand, uint64 multiplier, uint64 * 
 	//_lo : low 32 bits of result
 	//_hi : high 32 bits of result
 	asm("{\n\t"
-		".reg .u64          m0;\n\t"
+		".reg .u64          m0, m1, m2, m3;\n\t"
 		".reg .u32          t0, t1, t2, t3, v0, v1, v2, v3, p0, p1, c0;\n\t"
 		"mov.b64           {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
 		"mov.b64           {v2, v3}, %3;\n\t" //splits b into hi and lo 32 bit words
 		"mul.wide.u32       m0, v0, v2;    \n\t" //m0 = alo*blo
-		"mov.b64           {t0, t1}, m0;\n\t"//split m0 into lo and hi
-		"mul.wide.u32       m0, v0, v3;    \n\t" //m0 = alo*bhi
-		"mov.b64           {p0, p1}, m0;\n\t"
-		"add.cc.u32         t1, t1, p0;\n\t" //t1 = lo(alo*bhi) + hi(alo*blo)
-		"addc.cc.u32        t2, p1, 0;\n\t" //t2 = hi(alo*bhi)
-		"addc.u32           c0, 0, 0;\n\t"
-		"mul.wide.u32       m0, v1, v2;\n\t" //m0 = ahi*blo
-		"mov.b64           {p0, p1}, m0;\n\t"
-		"add.cc.u32         t1, t1, p0;\n\t" //lohi = lo(ahi*blo) + lo(alo*bhi) + hi(alo*blo) (with carry flag)
-		"addc.cc.u32        t2, t2, p1;\n\t" //hilo = hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
-		"addc.u32           c0, c0, 0;\n\t" 
-		"mul.wide.u32       m0, v1, v3;\n\t" //m0 = ahi*bhi
-		"mov.b64           {p0, p1}, m0;\n\t"
-		"add.cc.u32         t2, t2, p0;\n\t" //t2 = lo(ahi*bhi) + hi(ahi*blo) + hi(alo*bhi) + 2 carries (with carry flag)
-		"addc.u32           t3, p1, c0;\n\t" //t3 = hi(ahi*bhi) + 1 carry (no need to set carry)
+		"mul.wide.u32       m1, v0, v3;    \n\t" //m1 = alo*bhi
+		"mul.wide.u32       m2, v1, v2;    \n\t" //m2 = ahi*blo
+		"mul.wide.u32       m3, v1, v3;    \n\t" //m3 = ahi*bhi
+		"mov.b64           {t0, t1}, m0;\n\t"
+		"mov.b64           {t2, t3}, m3;\n\t"
+		"add.cc.u64         m1, m1, m2;\n\t" //alo*bhi + ahi*blo
+		"addc.u32           c0,  0,  0;\n\t" //preserve carryout
+		"mov.b64           {v0, v1}, m1;\n\t"
+		"add.cc.u32         t1, t1, v0;\n\t"
+		"addc.cc.u32        t2, t2, v1;\n\t"
+		"addc.u32           t3, t3, c0;\n\t"
 		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
 		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
 		"}"
@@ -124,7 +120,7 @@ __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
 		"mov.b64           {t0, t1}, m0;\n\t"
 		"mov.b64           {t2, t3}, m2;\n\t"
 		"add.cc.u64         m1, m1, m1;\n\t" //because (ahi + alo)^2 = ahi^2 + 2*alo*ahi + alo^2, we must double m1
-		"addc.u32           c0,  0,  0;\n\t"
+		"addc.u32           c0,  0,  0;\n\t" //preserve carryout
 		"mov.b64           {v0, v1}, m1;\n\t"
 		"add.cc.u32         t1, t1, v0;\n\t"
 		"addc.cc.u32        t2, t2, v1;\n\t"
