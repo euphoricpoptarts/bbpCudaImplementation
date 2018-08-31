@@ -20,6 +20,9 @@ namespace chr = std::chrono;
 
 const int totalGpus = 2;
 
+const char * filePathFormat = "progressCache/segmented%dDigit%lluSegment%dBase1024Progress%09.6f.dat";
+const char * fileNameBeginFormat = "segmented%dDigit%lluSegment%dBase";
+
 //warpsize is 32 so optimal value is probably always a multiple of 32
 const int threadCountPerBlock = 128;
 //this is more difficult to optimize but seems to not like odd numbers
@@ -60,6 +63,7 @@ typedef struct {
 	cudaError_t error;
 	volatile uint64 *deviceProg;
 	sJ * status;
+	uint64 segmentEnd;
 	volatile uint64 * nextStrideBegin;
 	volatile std::atomic<int> * dataWritten;
 } BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
@@ -638,7 +642,9 @@ uint64 finalizeDigit(sJ input, uint64 n) {
 }
 
 int checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * previousTime) {
-	std::string target = "digit" + std::to_string(digit) + "Base";
+	//std::string target = "digit" + std::to_string(digit) + "Base";
+	char buffer[100];
+	snprintf(buffer, sizeof(buffer), fileNameBeginFormat, totalSegments, digit);
 	std::string pToFile;
 	std::vector<std::string> matching;
 	int found = 0;
@@ -707,8 +713,14 @@ int main()
 	try {
 		const int arraySize = threadCountPerBlock * blockCount;
 		uint64 hexDigitPosition;
+		int totalSegments;
+		int segment;
 		std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
 		std::cin >> hexDigitPosition;
+		std::cout << "Input number of total segments to split calculation:" << std::endl;
+		std::cin >> totalSegments;
+		std::cout << "Input segment to calculate (1 - " << totalSegments << "):" << std::endl;
+		std::cin >> segment;
 		//subtract 1 to convert to 0-indexed
 		hexDigitPosition--;
 
@@ -719,6 +731,8 @@ int main()
 		//this is because division messes up with respect to modulus, so use the 16^digitPosition to absorb it
 		if (hexDigitPosition < 2) sumEnd = 0;
 		else sumEnd = ((2LLU * hexDigitPosition) - 3LLU) / 5LLU;
+
+		uint64 segmentEnd = (sumEnd + totalSegments) / totalSegments;
 
 		uint64 beginFrom = 0;
 		sJ cudaResult;
@@ -895,7 +909,7 @@ void progressCheck(PPROGRESSDATA progP) {
 
 				double savedProgress = (double) (contProcess - 1LLU) / (double)progP->maxProgress;
 
-				snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%09.6f.dat", progP->maxProgress, 100.0*savedProgress);
+				snprintf(buffer, sizeof(buffer), filePathFormat, totalSegments, progP->maxProgress, 100.0*savedProgress);
 
 				//would like to do this with ofstream and std::hexfloat
 				//but msvc is a microsoft product so...
