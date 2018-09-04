@@ -83,7 +83,7 @@
       <RuntimeChecks>InheritFromHost</RuntimeChecks>
       <TypeInfo>InheritFromHost</TypeInfo>
       <HostDebugInfo>true</HostDebugInfo>
-      <CodeGeneration>compute_61,sm_61</CodeGeneration>
+      <CodeGeneration>compute_61,sm_61;compute_52,sm_52</CodeGeneration>
       <GenerateLineInfo>true</GenerateLineInfo>
     </CudaCompile>
   </ItemDefinitionGroup>

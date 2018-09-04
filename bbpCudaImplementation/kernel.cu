@@ -18,15 +18,15 @@
 
 namespace chr = std::chrono;
 
-const int totalGpus = 2;
+const int totalGpus = 1;
 
 const char * filePathFormat = "progressCache/segmented%dDigit%lluSegment%dBase1024Progress%09.6f.dat";
 const char * fileNameBeginFormat = "segmented%dDigit%lluSegment%dBase";
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
-const int threadCountPerBlock = 128;
+const int threadCountPerBlock = 64;
 //this is more difficult to optimize but seems to not like odd numbers
-const int blockCount = 2240;
+const int blockCount = 300;
 
 __device__ __constant__ const uint64 baseSystem = 1024;
 //__device__  __constant__ const int baseExpOf2 = 10;
@@ -46,7 +46,8 @@ typedef struct {
 	double previousTime;
 	sJ status[totalGpus];
 	volatile uint64 nextStrideBegin[totalGpus];
-	uint64 maxProgress;
+	uint64 minProgress, maxProgress, digit;
+	uint64 totalSegments, segment;
 	volatile int quit = 0;
 	cudaError_t error;
 	chr::high_resolution_clock::time_point * begin;
@@ -641,17 +642,15 @@ uint64 finalizeDigit(sJ input, uint64 n) {
 	return (uint64)hexDigit;
 }
 
-int checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * previousTime) {
-	//std::string target = "digit" + std::to_string(digit) + "Base";
-	char buffer[100];
-	snprintf(buffer, sizeof(buffer), fileNameBeginFormat, totalSegments, digit);
+//find cache files matching match, then choose closest to completion
+int checkForProgressCache(std::string match, uint64 * contFrom, sJ * cache, double * previousTime) {
 	std::string pToFile;
 	std::vector<std::string> matching;
 	int found = 0;
 	for (auto& element : std::experimental::filesystem::directory_iterator("progressCache")) {
 		std::string name = element.path().filename().string();
 		//filename begins with desired string
-		if (name.compare(0, target.length(), target) == 0) {
+		if (name.compare(0, match.length(), match) == 0) {
 			matching.push_back(element.path().string());
 			found = 1;
 		}
@@ -723,6 +722,7 @@ int main()
 		std::cin >> segment;
 		//subtract 1 to convert to 0-indexed
 		hexDigitPosition--;
+		segment--;
 
 		uint64 sumEnd = 0;
 
@@ -732,12 +732,18 @@ int main()
 		if (hexDigitPosition < 2) sumEnd = 0;
 		else sumEnd = ((2LLU * hexDigitPosition) - 3LLU) / 5LLU;
 
-		uint64 segmentEnd = (sumEnd + totalSegments) / totalSegments;
+		uint64 segmentSize = (sumEnd + totalSegments) / totalSegments;
+		uint64 segmentBegin = segmentSize * segment;
+		uint64 segmentEnd = segmentSize * (segment + 1) - 1;
+		if (segmentEnd > sumEnd) segmentEnd = sumEnd;
 
-		uint64 beginFrom = 0;
+		uint64 beginFrom = segmentBegin;
 		sJ cudaResult;
 		double previousTime = 0.0;
-		if (checkForProgressCache(sumEnd, &beginFrom, &cudaResult, &previousTime)) {
+		char buffer[100];
+		snprintf(buffer, sizeof(buffer), fileNameBeginFormat, totalSegments, sumEnd, segment);
+		std::string cacheFilenameBegin = buffer;
+		if (checkForProgressCache(cacheFilenameBegin, &beginFrom, &cudaResult, &previousTime)) {
 			return 1;
 		}
 
@@ -750,7 +756,11 @@ int main()
 
 		if (prog->error != cudaSuccess) return 1;
 		prog->begin = &start;
-		prog->maxProgress = sumEnd;
+		prog->digit = sumEnd;
+		prog->totalSegments = totalSegments;
+		prog->segment = segment;
+		prog->maxProgress = segmentEnd;
+		prog->minProgress = segmentBegin;
 		prog->previousCache = cudaResult;
 		prog->previousTime = previousTime;
 
@@ -759,6 +769,7 @@ int main()
 		for (int i = 0; i < totalGpus; i++) {
 
 			gpuData[i].digit = sumEnd;
+			gpuData[i].segmentEnd = segmentEnd;
 			gpuData[i].gpu = i;
 			gpuData[i].totalGpus = totalGpus;
 			gpuData[i].size = arraySize;
@@ -867,7 +878,7 @@ void progressCheck(PPROGRESSDATA progP) {
 	int count = 0;
 	while(!progP->quit) {
 		count++;
-		double progress = (double)(*(progP->currentProgress)) / (double)progP->maxProgress;
+		double progress = ( (double)(*(progP->currentProgress)) - (double)progP->minProgress ) / ( (double)progP->maxProgress - (double)progP->minProgress );
 
 		chr::high_resolution_clock::time_point now = chr::high_resolution_clock::now();
 		progressQ.push_front(progress);
@@ -886,7 +897,7 @@ void progressCheck(PPROGRESSDATA progP) {
 		double timeEst = (1.0 - progress) / (progressPerSecond);
 		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
 		double time = progP->previousTime + (chr::duration_cast<chr::duration<double>>(now - *progP->begin)).count();
-		//only print every 10th cycle or 0.1 seconds
+		//only print every 10th cycle or ~0.1 seconds
 		if (count == 10) {
 			count = 0;
 			printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond, time);
@@ -909,7 +920,7 @@ void progressCheck(PPROGRESSDATA progP) {
 
 				double savedProgress = (double) (contProcess - 1LLU) / (double)progP->maxProgress;
 
-				snprintf(buffer, sizeof(buffer), filePathFormat, totalSegments, progP->maxProgress, 100.0*savedProgress);
+				snprintf(buffer, sizeof(buffer), filePathFormat, progP->totalSegments, progP->digit, progP->segment, 100.0*savedProgress);
 
 				//would like to do this with ofstream and std::hexfloat
 				//but msvc is a microsoft product so...
@@ -984,13 +995,13 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 	//need to round up
 	//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
 	//even when digit/launchWidth is an integer, it is necessary to add 1
-	neededLaunches = ((digit - data->beginFrom) / launchWidth) + 1LLU;
+	neededLaunches = ((data->segmentEnd - data->beginFrom) / launchWidth) + 1LLU;
 
 	for (uint64 launch = 0; launch < neededLaunches; launch++) {
 
 		uint64 begin = data->beginFrom + (launchWidth * launch);
 		uint64 end = data->beginFrom + (launchWidth * (launch + 1)) - 1;
-		if (end > digit) end = digit;
+		if (end > data->segmentEnd) end = data->segmentEnd;
 
 		// Launch a kernel on the GPU with one thread for each element.
 		bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, currProgDevice, digit, gpu, begin, end, stride);
