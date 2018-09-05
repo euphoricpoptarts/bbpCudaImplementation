@@ -18,15 +18,16 @@
 
 namespace chr = std::chrono;
 
-const int totalGpus = 1;
+const int totalGpus = 2;
 
 const char * filePathFormat = "progressCache/segmented%dDigit%lluSegment%dBase1024Progress%09.6f.dat";
 const char * fileNameBeginFormat = "segmented%dDigit%lluSegment%dBase";
+const char * completionPathFormat = "completed/segmented%dDigit%lluSegment%dBase1024Complete.dat";
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
-const int threadCountPerBlock = 64;
+const int threadCountPerBlock = 128;
 //this is more difficult to optimize but seems to not like odd numbers
-const int blockCount = 300;
+const int blockCount = 2240;
 
 __device__ __constant__ const uint64 baseSystem = 1024;
 //__device__  __constant__ const int baseExpOf2 = 10;
@@ -72,6 +73,7 @@ typedef struct {
 PPROGRESSDATA setupProgress();
 void progressCheck(PPROGRESSDATA data);
 void cudaBbpLauncher(PBBPLAUNCHERDATA dataV);
+void logCompletion(sJ * endResult, double time, const char * fileName);
 
 //adds all elements of addend and augend, storing in addend
 __device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
@@ -582,66 +584,6 @@ cudaError_t reduceSJ(sJ *c, unsigned int size) {
 	return cudaStatus;
 }
 
-uint64 finalizeDigit(sJ input, uint64 n) {
-	double reducer = 1.0;
-
-	//unfortunately 64 is not a power of 16, so if n is < 2
-	//then division is unavoidable
-	//this division must occur before any modulus are taken
-	if(n == 0) reducer /= 64.0;
-	else if (n == 1) reducer /= 4.0;
-
-	//logic relating to 1024 not being a power of 16 and having to divide by 64
-	int loopLimit = (2 * n - 3) % 5;
-	if (n < 2) n = 0;
-	else n = (2 * n - 3) / 5;
-
-	double trash = 0.0;
-	double *s = input.s;
-	for (int i = 0; i < 7; i++) s[i] *= reducer;
-	
-	if (n < 16000) {
-		for (int i = 0; i < 5; i++) {
-			n++;
-			double sign = 1.0;
-			double nD = (double)n;
-			if (n & 1) sign = -1.0;
-			reducer /= (double)baseSystem;
-			s[0] += sign * reducer / (4.0 * nD + 1.0);
-			s[1] += sign * reducer / (4.0 * nD + 3.0);
-			s[2] += sign * reducer / (10.0 * nD + 1.0);
-			s[3] += sign * reducer / (10.0 * nD + 3.0);
-			s[4] += sign * reducer / (10.0 * nD + 5.0);
-			s[5] += sign * reducer / (10.0 * nD + 7.0);
-			s[6] += sign * reducer / (10.0 * nD + 9.0);
-		}
-	}
-
-	//multiply sJs by coefficients from Bellard's formula and then find their fractional parts
-	double coeffs[7] = { -32.0, -1.0, 256.0, -64.0, -4.0, -4.0, 1.0 };
-	for (int i = 0; i < 7; i++) {
-		s[i] = modf(coeffs[i] * s[i], &trash);
-		if (s[i] < 0.0) s[i]++;
-	}
-
-	double hexDigit = 0.0;
-	for (int i = 0; i < 7; i++) hexDigit += s[i];
-	hexDigit = modf(hexDigit, &trash);
-	if (hexDigit < 0) hexDigit++;
-
-	//16^n is divided by 64 and then combined into chunks of 1024^m
-	//where m is = (2n - 3)/5
-	//because 5 may not evenly divide this, the remaining 4^((2n - 3)%5)
-	//must be multiplied into the formula at the end
-	for (int i = 0; i < loopLimit; i++) hexDigit *= 4.0;
-	hexDigit = modf(hexDigit, &trash);
-
-	//shift left by 8 hex digits
-	for (int i = 0; i < 12; i++) hexDigit *= 16.0;
-	printf("hexDigit = %.8f\n", hexDigit);
-	return (uint64)hexDigit;
-}
-
 //find cache files matching match, then choose closest to completion
 int checkForProgressCache(std::string match, uint64 * contFrom, sJ * cache, double * previousTime) {
 	std::string pToFile;
@@ -740,7 +682,7 @@ int main()
 		uint64 beginFrom = segmentBegin;
 		sJ cudaResult;
 		double previousTime = 0.0;
-		char buffer[100];
+		char buffer[256];
 		snprintf(buffer, sizeof(buffer), fileNameBeginFormat, totalSegments, sumEnd, segment);
 		std::string cacheFilenameBegin = buffer;
 		if (checkForProgressCache(cacheFilenameBegin, &beginFrom, &cudaResult, &previousTime)) {
@@ -807,15 +749,17 @@ int main()
 
 		free(prog);
 
-		uint64 hexDigit = finalizeDigit(cudaResult, hexDigitPosition);
-
 		chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
 
-		printf("pi at hexadecimal digit %llu is %012llX\n",
-			hexDigitPosition + 1, hexDigit);
-
 		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
-		printf("Computed in %.8f seconds\n", previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
+		double totalTime = previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count();
+
+		char buffer2[256];
+		snprintf(buffer2, sizeof(buffer2), completionPathFormat, totalSegments, sumEnd, segment);
+
+		logCompletion(&cudaResult, totalTime, buffer2);
+
+		printf("Computed in %.8f seconds\n", totalTime);
 
 		// cudaDeviceReset must be called before exiting in order for profiling and
 		// tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -916,7 +860,7 @@ void progressCheck(PPROGRESSDATA progP) {
 			
 			if (sJsAligned) {
 
-				char buffer[100];
+				char buffer[256];
 
 				double savedProgress = (double) (contProcess - 1LLU) / (double)progP->maxProgress;
 
@@ -1074,4 +1018,20 @@ Error:
 	cudaFree(dev_ex);
 
 	(*data).error = cudaStatus;
+}
+
+void logCompletion(sJ * endResult, double time, const char * fileName) {
+
+	FILE * file;
+	file = fopen(fileName, "w+");
+	if (file != NULL) {
+		printf("Writing final result to disk\n");
+		fprintf(file, "%a\n", time);
+		for (int i = 0; i < 7; i++) fprintf(file, "%a\n", endResult->s[i]);
+		fclose(file);
+	}
+	else {
+		fprintf(stderr, "Error opening file %s\n", fileName);
+	}
+
 }
