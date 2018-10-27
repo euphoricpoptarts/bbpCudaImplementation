@@ -14,6 +14,7 @@
 #include <string>
 #include <algorithm>
 
+#define uint32 unsigned long
 #define uint64 unsigned long long
 
 namespace chr = std::chrono;
@@ -30,7 +31,7 @@ __device__ __constant__ const uint64 baseSystem = 1024;
 
 __device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
 
-//__device__ int printOnce = 0;
+__device__ int printOnce = 0;
 
 struct sJ {
 	double s[7] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
@@ -301,6 +302,39 @@ __device__ void multiplyAdd64Hi(const uint64 & multiplicand, const uint64 & mult
 		: "l"(multiplicand), "l"(multiplier), "l"(*accumulate));
 }
 
+
+//using R=2^32, performs the 2-word montgomery reduction on the number represented by hi and lo
+__device__ void montgomeryAddAndShift32Bit(uint64 & hi, uint64 & lo, const uint64 & mod, const uint32 & mprime) {
+	//a : multiplicand
+	//b : multiplier
+	//_lo : low 32 bits of result
+	//_hi : high 32 bits of result
+	asm("{\n\t"
+		".reg .u32          t0, t1, t2, t3, z0, z1, m0, m1;\n\t"
+		"mov.b64           {m0, m1}, %4;\n\t" //splits mod into m0 and m1
+		"mov.b64           {t0, t1}, %2;\n\t" //splits lo into hi and lo 32 bit words
+		"mov.b64           {t2, t3}, %3;\n\t" //splits hi into hi and lo 32 bit words
+		"mul.lo.u32         z0, %5, t0;\n\t" //z0 =  lo(mprime*lolo)
+		"mad.lo.cc.u32      t0, z0, m0, t0;\n\t" //t0 = lolo + lo(t0 * z0)
+		"madc.hi.cc.u32     t1, z0, m0, t1;\n\t"
+		"addc.cc.u32        t2,  0, t2;\n\t"
+		"addc.u32           t3,  0, t3;\n\t"
+		"mad.lo.cc.u32      t1, z0, m1, t1;\n\t"
+		"madc.hi.cc.u32     t2, z0, m1, t2;\n\t"
+		"addc.u32           t3,  0, t3;\n\t"
+		"mul.lo.u32         z1, %5, t1;\n\t" //z1 =  lo(mprime*t1)
+		"mad.lo.cc.u32      t1, z1, m0, t1;\n\t"
+		"madc.hi.cc.u32     t2, z1, m0, t2;\n\t"
+		"addc.u32           t3,  0, t3;\n\t"
+		"mad.lo.cc.u32      t2, z1, m1, t2;\n\t" //t0 = lolo + lo(t0 * z0)
+		"madc.hi.u32        t3, z1, m1, t3;\n\t"
+		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
+		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		"}"
+		: "=l"(lo), "=l"(hi)
+		: "l"(lo), "l"(hi), "l"(mod), "r"(mprime));
+}
+
 //calculates the 128 bit product of multiplicand and multiplier
 //takes the highest 64 bits and multiplies it by maxMod (2^64 % mod) and adds it to the low 64 bits, repeating until the highest 64 bits are zero
 //this takes (log2(mod)) / (64 - log2(mod)) steps
@@ -372,10 +406,36 @@ __device__ void xbinGCD(uint64 b, uint64 *pv)
 	return;
 }
 
+//finds output such that (n * output) % 2^64 = -1
+//found this approach used here: http://plouffe.fr/simon/1-s2.0-S0167819118300334-main.pdf
+//an explanation of the approach: http://marc-b-reynolds.github.io/math/2017/09/18/ModInverse.html
+//saves from 15-25% of the total computation time over xbinGCD method (on the lower side of that for larger digit computations)
+__device__ void modInverseNewtonsMethod(uint64 n, uint64 & output) {
+	output = (n * 3LLU) ^ 2LLU;
+
+	for (int i = 0; i < 4; i++) {
+		output = output * (2 - (n * output));
+	}
+
+	//we have (n * output) % 2^64 = 1, so we need to invert it
+	output = -output;
+}
+
+//finds output such that (n * output) % 2^32 = -1
+__device__ void modInverseNewtonsMethod32(uint32 n, uint32 & output) {
+	output = (n * 3LLU) ^ 2LLU;
+
+	for (int i = 0; i < 3; i++) {
+		output = output * (2 - (n * output));
+	}
+
+	//we have (n * output) % 2^32 = 1, so we need to invert it
+	output = -output;
+}
 
 //montgomery multiplication method from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
 //slightly modified to use more efficient 64 bit multiply-adds in PTX assembly
-__device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mprime, uint64 & output) {
+__device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint32 mprime, uint64 & output) {
 
 	uint64 tlo = 0, tm = 0;
 	//INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, tmmlo = 0, uhi = 0, ulo = 0, ov = 0;
@@ -384,43 +444,51 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint64 mpri
 
 	multiply64By64(abar, bbar, &tlo, &output);
 
-	//unless tlo is zero here, there will always be a carry from tm*mod + tlo
-	//this would only be a problem if thi was 2^64 - 1
-	//which can never occur if mod is representable in an unsigned long long
-	output += !!tlo;
+	////unless tlo is zero here, there will always be a carry from tm*mod + tlo
+	////this would only be a problem if thi was 2^64 - 1
+	////which can never occur if mod is representable in an unsigned long long
+	//output += !!tlo;
 
-	/* Now compute u = (t + ((t*mprime) & mask)*m) >> 64.
-	The mask is fixed at 2**64-1. Because it is a 64-bit
-	quantity, it suffices to compute the low-order 64
-	bits of t*mprime, which means we can ignore thi. */
+	///* Now compute u = (t + ((t*mprime) & mask)*m) >> 64.
+	//The mask is fixed at 2**64-1. Because it is a 64-bit
+	//quantity, it suffices to compute the low-order 64
+	//bits of t*mprime, which means we can ignore thi. */
 
-	//tm = tlo * mprime;
-	multiply64By64LoOnly(tlo, mprime, &tm);
-	
-	//there is an optimization to be made here, tm = lo64(tlo * mprime)
-	//so tm * mod = lo64(tlo * mprime) * mod
-	//but mprime*mod is constant for a given mod
-	//is there a way to reduce the amount of work from this?
-	//multiply64By64PlusLo(tm, mod, &tlo, &tmmhi);
-	multiply64By64PlusHi(tm, mod, &output);//tlo is not used
-	//also if mod is < 2^63 this can't overflow
-	
-	//assumes mod < 2^63, WILL NOT WORK if mod > 2^63 because overflow can exist in above addition in that case
-	//if (thi >= mod) thi -= mod;
-	//in addition to mitigating most GPUs' poor conditional branching performance, unconditional code execution is also resistant to side-channel attacks
+	////tm = tlo * mprime;
+	//multiply64By64LoOnly(tlo, mprime, &tm);
+	//
+	////there is an optimization to be made here, tm = lo64(tlo * mprime)
+	////so tm * mod = lo64(tlo * mprime) * mod
+	////but mprime*mod is constant for a given mod
+	////is there a way to reduce the amount of work from this?
+	////multiply64By64PlusLo(tm, mod, &tlo, &tmmhi);
+	//multiply64By64PlusHi(tm, mod, &output);//tlo is not used
+	////also if mod is < 2^63 this can't overflow
+	//
+	////assumes mod < 2^63, WILL NOT WORK if mod > 2^63 because overflow can exist in above addition in that case
+	////if (thi >= mod) thi -= mod;
+	////in addition to mitigating most GPUs' poor conditional branching performance, unconditional code execution is also resistant to side-channel attacks
+
+
+	montgomeryAddAndShift32Bit(output, tlo, mod, mprime);
+
 	output = output - (mod & -((output >= mod)));
 }
 
 //montgomery multiplication routine identical to above except for only being used when abar and bbar are known in advance to be the same
 //uses a faster multiplication routine for squaring than is possible while not squaring
-__device__ void montgomerySquare(uint64 abar, uint64 mod, uint64 mprime, uint64 & output) {
+__device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 & output) {
 
 	uint64 tlo = 0, tm = 0;
 
 	square64By64(abar, &tlo, &output);
-	output += !!tlo;
+	/*output += !!tlo;
 	multiply64By64LoOnly(tlo, mprime, &tm);
-	multiply64By64PlusHi(tm, mod, &output);
+	multiply64By64PlusHi(tm, mod, &output);*/
+
+
+	montgomeryAddAndShift32Bit(output, tlo, mod, mprime);
+
 	output = output - (mod & -((output >= mod)));
 }
 
@@ -436,11 +504,11 @@ __device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int sh
 		return;
 	}
 
-	uint64 mPrime;
+	uint32 mPrime;
 
 	//finds rInverse*2^64 - mPrime*mod = 1
 	//we only need mPrime though
-	xbinGCD(mod, &mPrime);
+	modInverseNewtonsMethod32(mod, mPrime);
 	uint64 baseNonZeroPowers[3];
 
 	uint64 maxMod = int64MaxBit % mod;
