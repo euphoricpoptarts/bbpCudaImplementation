@@ -441,7 +441,7 @@ __device__ void modInverseNewtonsMethod32and64(uint64 n, uint32 & output, uint64
 //slightly modified to use more efficient 64 bit multiply-adds in PTX assembly
 __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint32 mprime, uint64 & output) {
 
-	uint64 tlo = 0, tm = 0;
+	uint64 tlo = 0;// , tm = 0;
 	//INT_64 thi = 0, tlo = 0, tm = 0, tmmhi = 0, tmmlo = 0, uhi = 0, ulo = 0, ov = 0;
 
 	/* t = abar*bbar. */
@@ -483,7 +483,7 @@ __device__ void montgomeryMult(uint64 abar, uint64 bbar, uint64 mod, uint32 mpri
 //uses a faster multiplication routine for squaring than is possible while not squaring
 __device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 & output) {
 
-	uint64 tlo = 0, tm = 0;
+	uint64 tlo = 0;// , tm = 0;
 
 	square64By64(abar, &tlo, &output);
 	/*output += !!tlo;
@@ -514,7 +514,7 @@ __device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, co
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
 //adds the 128 bit number representing ((2^exp)%mod)/mod to result
-__device__ void modExpLeftToRight(uint64 & exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract) {
+__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract) {
 
 	uint64 output = 1;
 	uint32 mPrime;
@@ -528,7 +528,7 @@ __device__ void modExpLeftToRight(uint64 & exp, const uint64 & mod, uint64 * res
 	if (exp < subtract) return;
 	exp = exp - subtract;
 
-	if (exp > 64) {
+	if (exp) {
 
 		//find 2 in montgomery space
 		uint64 maxMod = int64MaxBit % mod;
@@ -562,24 +562,16 @@ __device__ void modExpLeftToRight(uint64 & exp, const uint64 & mod, uint64 * res
 		//convert result out of montgomery form
 		montgomeryMult(output, 1, mod, mPrime, output);
 	}
-	else if (exp == 64) {
-		output = int64MaxBit % mod;
-		output <<= 1;
-		if (output >= mod) output -= mod;
-	}
-	else output = (1LLU << exp) % mod;
+	//else if (exp == 64) {
+	//	output = int64MaxBit % mod;
+	//	output <<= 1;
+	//	if (output >= mod) output -= mod;
+	//}
+	//else output = (1LLU << exp) % mod;
 
 	if (negative) output = mod - output;
 
 	fixedPointDivisionExact(mod, output, -mPrime2, result);
-}
-
-//find ( baseSystem^n % mod ) / mod and add to partialSum
-//experimented with placing forceinline and noinline on various functions again
-//with new changes, noinline now has most effect here, no idea why
-__device__ __noinline__ void fractionalPartOfSum(uint64 exp, uint64 subtract, const uint64 & mod, uint64 * partialSum, const int & negative) {
-	
-	modExpLeftToRight(exp, mod, partialSum, negative, subtract);
 }
 
 //stride over all parts of summation in bbp formula where k <= n
@@ -588,19 +580,20 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 	for (uint64 k = start; k <= end; k += stride) {
 		uint64 exp = startingExponent - (k*10LLU);
 		uint64 mod = 4 * k + 1;
-		fractionalPartOfSum(exp, 1, mod, output->s, (k & 1) ^ 1);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 1);
 		mod += 2;//4k + 3
-		fractionalPartOfSum(exp, 6, mod, output->s, (k & 1) ^ 1);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6);
 		mod = 10 * k + 1;
-		fractionalPartOfSum(exp + 2, 0, mod, output->s, k & 1);
+		//would need to make last parameter -2, but negative numbers are not allowed
+		modExpLeftToRight(exp + 2, mod, output->s, k & 1, 0);
 		mod += 2;//10k + 3
-		fractionalPartOfSum(exp, 0, mod, output->s, (k & 1) ^ 1);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 0);
 		mod += 2;//10k + 5
-		fractionalPartOfSum(exp, 4, mod, output->s, (k & 1) ^ 1);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 4);
 		mod += 2;//10k + 7
-		fractionalPartOfSum(exp, 4, mod, output->s, (k & 1) ^ 1);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 4);
 		mod += 2;//10k + 9
-		fractionalPartOfSum(exp, 6, mod, output->s , k & 1);
+		modExpLeftToRight(exp, mod, output->s , k & 1, 6);
 		if (!progressCheck) {
 			//printf("%llu\n", exp);
 			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
@@ -760,10 +753,10 @@ int checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * 
 
 				readLines += fscanf(cacheF, "%llu", contFrom);
 				readLines += fscanf(cacheF, "%la", previousTime);
-				for (int i = 0; i < 7; i++) readLines += fscanf(cacheF, "%la", &cache->s[i]);
+				for (int i = 0; i < 2; i++) readLines += fscanf(cacheF, "%llX", &cache->s[i]);
 				fclose(cacheF);
 				//9 lines of data should have been read, 1 continuation point, 1 time, and 7 data points
-				if (readLines != 9) {
+				if (readLines != 4) {
 					std::cout << "Data reading failed!" << std::endl;
 					return 1;
 				}
@@ -991,7 +984,7 @@ void progressCheck(PPROGRESSDATA progP) {
 					for (int i = 0; i < totalGpus; i++) {
 						sJAdd(&currStatus, progP->status + i);
 					}
-					for(int i = 0; i < 7; i++) fprintf(file, "%a\n", currStatus.s[i]);
+					for(int i = 0; i < 2; i++) fprintf(file, "%llX\n", currStatus.s[i]);
 					fclose(file);
 				}
 				else {
