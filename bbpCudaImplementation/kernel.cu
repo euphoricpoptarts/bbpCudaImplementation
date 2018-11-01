@@ -26,7 +26,7 @@ const int threadCountPerBlock = 128;
 //this is more difficult to optimize but seems to not like odd numbers
 const int blockCount = 2240;
 
-__device__ __constant__ const uint64 baseSystem = 1024;
+__device__ __constant__ const uint64 baseSystem = 2;
 //__device__  __constant__ const int baseExpOf2 = 10;
 
 __device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
@@ -34,7 +34,7 @@ __device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
 __device__ int printOnce = 0;
 
 struct sJ {
-	double s[7] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+	uint64 s[2] = { 0, 0};
 };
 
 typedef struct {
@@ -54,6 +54,7 @@ typedef struct {
 typedef struct {
 	sJ output;
 	uint64 digit;
+	uint64 exponent;
 	uint64 beginFrom;
 	int gpu = 0;
 	int totalGpus = 0;
@@ -71,10 +72,9 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA dataV);
 
 //adds all elements of addend and augend, storing in addend
 __device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
-	for (int i = 0; i < 7; i++) {
-		addend->s[i] += augend->s[i];
-		if (addend->s[i] >= 1.0) addend->s[i] -= 1.0;
-	}
+	addend->s[0] += augend->s[0];
+	addend->s[1] += augend->s[1];
+	if (addend->s[0] < augend->s[0]) addend->s[1]++;
 }
 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of multiplying 2 64 bit numbers together
@@ -422,15 +422,19 @@ __device__ void modInverseNewtonsMethod(uint64 n, uint64 & output) {
 }
 
 //finds output such that (n * output) % 2^32 = -1
-__device__ void modInverseNewtonsMethod32(uint32 n, uint32 & output) {
-	output = (n * 3LLU) ^ 2LLU;
+__device__ void modInverseNewtonsMethod32and64(uint64 n, uint32 & output, uint64 & output2) {
+	output2 = (n * 3LLU) ^ 2LLU;
 
-	for (int i = 0; i < 3; i++) {
-		output = output * (2 - (n * output));
+	for (int i = 0; i < 4; i++) {
+		output2 = output2 * (2LLU - (n * output2));
 	}
+
+	//truncate for 32-bit result
+	output = output2;
 
 	//we have (n * output) % 2^32 = 1, so we need to invert it
 	output = -output;
+	output2 = -output2;
 }
 
 //montgomery multiplication method from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
@@ -492,101 +496,113 @@ __device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 
 	output = output - (mod & -((output >= mod)));
 }
 
+__device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result) {
+	if (!r) return;
+
+	uint64 q0 = (-r)*mPrime;
+	uint64 q1 = -(1LLU) - __umul64hi(mod, q0);
+	q1 *= mPrime;
+
+	result[0] += q0;
+	result[1] += q1;
+	if (result[0] < q0) result[1]++;
+	
+}
+
 //using left-to-right binary exponentiation
 //the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
-//now uses quarternary exponentiation, in an effort to halve the number of multplications required when exponent and bitmask match
-__device__ void modExpLeftToRight(const uint64 & exp, const uint64 & mod, int shiftToLittleBits, uint64 & output) {
+//adds the 128 bit number representing ((2^exp)%mod)/mod to result
+__device__ void modExpLeftToRight(uint64 & exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract) {
 
-	if (!exp) {
-		//no need to set output to anything as it is already 1
-		return;
-	}
-
+	uint64 output = 1;
 	uint32 mPrime;
+	uint64 mPrime2;
 
 	//finds rInverse*2^64 - mPrime*mod = 1
 	//we only need mPrime though
-	modInverseNewtonsMethod32(mod, mPrime);
-	uint64 baseNonZeroPowers[3];
+	modInverseNewtonsMethod32and64(mod, mPrime, mPrime2);
 
-	uint64 maxMod = int64MaxBit % mod;
-
-	maxMod <<= 1;
 	
-	if (maxMod > mod) maxMod -= mod;
+	if (exp < subtract) return;
+	exp = exp - subtract;
 
-	//baseSystem*2^64 % mod
-	modMultiply64Bit(maxMod, baseSystem, mod, maxMod, baseNonZeroPowers[0]);
+	if (exp > 64) {
 
-	montgomerySquare(baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[1]);//baseNonZeroPowers[1] = baseBar^2
-	montgomeryMult(baseNonZeroPowers[1], baseNonZeroPowers[0], mod, mPrime, baseNonZeroPowers[2]);//baseNonZeroPowers[2] = baseBar^3
+		//find 2 in montgomery space
+		uint64 maxMod = int64MaxBit % mod;
+		maxMod <<= 1;
+		if (maxMod >= mod) maxMod -= mod;
+		output = maxMod << 1;
+		if (output >= mod) output -= mod;
 
-	int quarternaryDigit = ((exp >> shiftToLittleBits) & 3);
-	output = baseNonZeroPowers[quarternaryDigit - 1];
 
-	while (shiftToLittleBits) {
+		//shift represents number of bits needed to shift highest set bit in exp
+		//into the lowest bit
+		int shiftToLittleBits = 63 - __clzll(exp);
+		//if shift is negative set to zero
+		shiftToLittleBits *= (shiftToLittleBits > 0);
 
-		montgomerySquare(output, mod, mPrime, output);//result^2
-		montgomerySquare(output, mod, mPrime, output);//result^4
+		while (shiftToLittleBits) {
 
-		shiftToLittleBits -= 2;
+			montgomerySquare(output, mod, mPrime, output);//result^2
+			//montgomerySquare(output, mod, mPrime, output);//result^4
 
-		quarternaryDigit = (exp >> shiftToLittleBits) & 3;
+			shiftToLittleBits -= 1;
 
-		if (quarternaryDigit) {
-			montgomeryMult(output, baseNonZeroPowers[quarternaryDigit - 1], mod, mPrime, output);//result*base
+			int binaryDigit = (exp >> shiftToLittleBits) & 1;
+
+			if (binaryDigit) {
+				output <<= 1;
+				if (output >= mod) output -= mod;
+			}
 		}
-	}
 
-	//convert result out of montgomery form
-	montgomeryMult(output, 1, mod, mPrime, output);
+		//convert result out of montgomery form
+		montgomeryMult(output, 1, mod, mPrime, output);
+	}
+	else if (exp == 64) {
+		output = int64MaxBit % mod;
+		output <<= 1;
+		if (output >= mod) output -= mod;
+	}
+	else output = (1LLU << exp) % mod;
+
+	if (negative) output = mod - output;
+
+	fixedPointDivisionExact(mod, output, -mPrime2, result);
 }
 
 //find ( baseSystem^n % mod ) / mod and add to partialSum
 //experimented with placing forceinline and noinline on various functions again
 //with new changes, noinline now has most effect here, no idea why
-__device__ __noinline__ void fractionalPartOfSum(const uint64 & exp, const uint64 & mod, double *partialSum, int shift, const int & negative) {
-	uint64 expModResult = 1;
-	modExpLeftToRight(exp, mod, shift, expModResult);
-	//if k is odd, then sumTerm will be negative
-	//which just means we need to invert it about the modulus
-	if (negative) expModResult = mod - expModResult;
-
-	double sumTerm = (((double)expModResult) / ((double)mod));
+__device__ __noinline__ void fractionalPartOfSum(uint64 exp, uint64 subtract, const uint64 & mod, uint64 * partialSum, const int & negative) {
 	
-	*partialSum += sumTerm;
-	if((*partialSum) >= 1.0) *partialSum -= 1.0;
+	modExpLeftToRight(exp, mod, partialSum, negative, subtract);
 }
 
 //stride over all parts of summation in bbp formula where k <= n
 //to compute partial sJ sums
-__device__ void bbp(uint64 n, uint64 start, uint64 end, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
+__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
 	for (uint64 k = start; k <= end; k += stride) {
-		uint64 exp = n - k;
-		//shift represents number of bits needed to shift highest set bit pair in exp
-		//into the lowest 2 bits
-		int shift = 62 - __clzll(exp);
-		//if shift is negative set to zero
-		shift *= (shift > 0);
-		//if shift is odd round up to nearest multiple of 2
-		shift += shift & 1;
+		uint64 exp = startingExponent - (k*10LLU);
 		uint64 mod = 4 * k + 1;
-		fractionalPartOfSum(exp, mod, output->s, shift, k & 1);
+		fractionalPartOfSum(exp, 1, mod, output->s, (k & 1) ^ 1);
 		mod += 2;//4k + 3
-		fractionalPartOfSum(exp, mod, output->s + 1, shift, k & 1);
+		fractionalPartOfSum(exp, 6, mod, output->s, (k & 1) ^ 1);
 		mod = 10 * k + 1;
-		fractionalPartOfSum(exp, mod, output->s + 2, shift, k & 1);
+		fractionalPartOfSum(exp + 2, 0, mod, output->s, k & 1);
 		mod += 2;//10k + 3
-		fractionalPartOfSum(exp, mod, output->s + 3, shift, k & 1);
+		fractionalPartOfSum(exp, 0, mod, output->s, (k & 1) ^ 1);
 		mod += 2;//10k + 5
-		fractionalPartOfSum(exp, mod, output->s + 4, shift, k & 1);
+		fractionalPartOfSum(exp, 4, mod, output->s, (k & 1) ^ 1);
 		mod += 2;//10k + 7
-		fractionalPartOfSum(exp, mod, output->s + 5, shift, k & 1);
+		fractionalPartOfSum(exp, 4, mod, output->s, (k & 1) ^ 1);
 		mod += 2;//10k + 9
-		fractionalPartOfSum(exp, mod, output->s + 6 , shift, k & 1);
+		fractionalPartOfSum(exp, 6, mod, output->s , k & 1);
 		if (!progressCheck) {
+			//printf("%llu\n", exp);
 			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
 			*progress = k;
 		}
@@ -595,12 +611,12 @@ __device__ void bbp(uint64 n, uint64 start, uint64 end, uint64 stride, sJ* outpu
 
 //determine from thread and block position where to begin stride
 //only one of the threads per kernel (AND ONLY ON GPU0) will report progress
-__global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 digit, int gpuNum, uint64 begin, uint64 end, uint64 stride)
+__global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 stride)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
 	uint64 start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
-	bbp(digit, start, end, stride, c + gridId, progress, progressCheck);
+	bbp(startingExponent, start, end, stride, c + gridId, progress, progressCheck);
 }
 
 //stride over current leaves of reduce tree
@@ -645,65 +661,65 @@ cudaError_t reduceSJ(sJ *c, unsigned int size) {
 	return cudaStatus;
 }
 
-uint64 finalizeDigit(sJ input, uint64 n) {
-	double reducer = 1.0;
-
-	//unfortunately 64 is not a power of 16, so if n is < 2
-	//then division is unavoidable
-	//this division must occur before any modulus are taken
-	if(n == 0) reducer /= 64.0;
-	else if (n == 1) reducer /= 4.0;
-
-	//logic relating to 1024 not being a power of 16 and having to divide by 64
-	int loopLimit = (2 * n - 3) % 5;
-	if (n < 2) n = 0;
-	else n = (2 * n - 3) / 5;
-
-	double trash = 0.0;
-	double *s = input.s;
-	for (int i = 0; i < 7; i++) s[i] *= reducer;
-	
-	if (n < 16000) {
-		for (int i = 0; i < 5; i++) {
-			n++;
-			double sign = 1.0;
-			double nD = (double)n;
-			if (n & 1) sign = -1.0;
-			reducer /= (double)baseSystem;
-			s[0] += sign * reducer / (4.0 * nD + 1.0);
-			s[1] += sign * reducer / (4.0 * nD + 3.0);
-			s[2] += sign * reducer / (10.0 * nD + 1.0);
-			s[3] += sign * reducer / (10.0 * nD + 3.0);
-			s[4] += sign * reducer / (10.0 * nD + 5.0);
-			s[5] += sign * reducer / (10.0 * nD + 7.0);
-			s[6] += sign * reducer / (10.0 * nD + 9.0);
-		}
-	}
-
-	//multiply sJs by coefficients from Bellard's formula and then find their fractional parts
-	double coeffs[7] = { -32.0, -1.0, 256.0, -64.0, -4.0, -4.0, 1.0 };
-	for (int i = 0; i < 7; i++) {
-		s[i] = modf(coeffs[i] * s[i], &trash);
-		if (s[i] < 0.0) s[i]++;
-	}
-
-	double hexDigit = 0.0;
-	for (int i = 0; i < 7; i++) hexDigit += s[i];
-	hexDigit = modf(hexDigit, &trash);
-	if (hexDigit < 0) hexDigit++;
-
-	//16^n is divided by 64 and then combined into chunks of 1024^m
-	//where m is = (2n - 3)/5
-	//because 5 may not evenly divide this, the remaining 4^((2n - 3)%5)
-	//must be multiplied into the formula at the end
-	for (int i = 0; i < loopLimit; i++) hexDigit *= 4.0;
-	hexDigit = modf(hexDigit, &trash);
-
-	//shift left by 8 hex digits
-	for (int i = 0; i < 12; i++) hexDigit *= 16.0;
-	printf("hexDigit = %.8f\n", hexDigit);
-	return (uint64)hexDigit;
-}
+//uint64 finalizeDigit(sJ input, uint64 n) {
+//	double reducer = 1.0;
+//
+//	//unfortunately 64 is not a power of 16, so if n is < 2
+//	//then division is unavoidable
+//	//this division must occur before any modulus are taken
+//	if(n == 0) reducer /= 64.0;
+//	else if (n == 1) reducer /= 4.0;
+//
+//	//logic relating to 1024 not being a power of 16 and having to divide by 64
+//	/*int loopLimit = (2 * n - 3) % 5;
+//	if (n < 2) n = 0;
+//	else n = (2 * n - 3) / 5;*/
+//
+//	double trash = 0.0;
+//	double *s = input.s;
+//	for (int i = 0; i < 7; i++) s[i] *= reducer;
+//	
+//	if (n < 16000) {
+//		for (int i = 0; i < 5; i++) {
+//			n++;
+//			double sign = 1.0;
+//			double nD = (double)n;
+//			if (n & 1) sign = -1.0;
+//			reducer /= (double)baseSystem;
+//			s[0] += sign * reducer / (4.0 * nD + 1.0);
+//			s[1] += sign * reducer / (4.0 * nD + 3.0);
+//			s[2] += sign * reducer / (10.0 * nD + 1.0);
+//			s[3] += sign * reducer / (10.0 * nD + 3.0);
+//			s[4] += sign * reducer / (10.0 * nD + 5.0);
+//			s[5] += sign * reducer / (10.0 * nD + 7.0);
+//			s[6] += sign * reducer / (10.0 * nD + 9.0);
+//		}
+//	}
+//
+//	//multiply sJs by coefficients from Bellard's formula and then find their fractional parts
+//	double coeffs[7] = { -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0 };
+//	for (int i = 0; i < 7; i++) {
+//		s[i] = modf(coeffs[i] * s[i], &trash);
+//		if (s[i] < 0.0) s[i]++;
+//	}
+//
+//	double hexDigit = 0.0;
+//	for (int i = 0; i < 7; i++) hexDigit += s[i];
+//	hexDigit = modf(hexDigit, &trash);
+//	if (hexDigit < 0) hexDigit++;
+//
+//	//16^n is divided by 64 and then combined into chunks of 1024^m
+//	//where m is = (2n - 3)/5
+//	//because 5 may not evenly divide this, the remaining 4^((2n - 3)%5)
+//	//must be multiplied into the formula at the end
+//	/*for (int i = 0; i < loopLimit; i++) hexDigit *= 4.0;
+//	hexDigit = modf(hexDigit, &trash);*/
+//
+//	//shift left by 8 hex digits
+//	for (int i = 0; i < 12; i++) hexDigit *= 16.0;
+//	printf("hexDigit = %.8f\n", hexDigit);
+//	return (uint64)hexDigit;
+//}
 
 int checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * previousTime) {
 	std::string target = "digit" + std::to_string(digit) + "Base";
@@ -782,11 +798,8 @@ int main()
 
 		uint64 sumEnd = 0;
 
-		//convert from number of digits in base16 to base1024
-		//because of the 1/64 in formula, we must subtract log16(64) which is 1.5, so carrying the 2 * (digitPosition - 1.5) = 2 * digitPosition - 3
-		//this is because division messes up with respect to modulus, so use the 16^digitPosition to absorb it
-		if (hexDigitPosition < 2) sumEnd = 0;
-		else sumEnd = ((2LLU * hexDigitPosition) - 3LLU) / 5LLU;
+		uint64 startingExponent = (4LLU * hexDigitPosition) + 128LLU;
+		sumEnd = (4LLU * hexDigitPosition) / 10LLU;
 
 		uint64 beginFrom = 0;
 		sJ cudaResult;
@@ -814,6 +827,7 @@ int main()
 
 			gpuData[i].digit = sumEnd;
 			gpuData[i].gpu = i;
+			gpuData[i].exponent = startingExponent;
 			gpuData[i].totalGpus = totalGpus;
 			gpuData[i].size = arraySize;
 			gpuData[i].deviceProg = prog->deviceProg;
@@ -850,12 +864,12 @@ int main()
 
 		free(prog);
 
-		uint64 hexDigit = finalizeDigit(cudaResult, hexDigitPosition);
+		//uint64 hexDigit = finalizeDigit(cudaResult, hexDigitPosition);
 
 		chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
 
-		printf("pi at hexadecimal digit %llu is %012llX\n",
-			hexDigitPosition + 1, hexDigit);
+		printf("pi at hexadecimal digit %llu is %016llX %016llX\n",
+			hexDigitPosition + 1, cudaResult.s[1], cudaResult.s[0]);
 
 		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
 		printf("Computed in %.8f seconds\n", previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
@@ -1047,7 +1061,7 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 		if (end > digit) end = digit;
 
 		// Launch a kernel on the GPU with one thread for each element.
-		bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, currProgDevice, digit, gpu, begin, end, stride);
+		bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, currProgDevice, data->exponent, gpu, begin, end, stride);
 
 		// Check for any errors launching the kernel
 		cudaStatus = cudaGetLastError();
