@@ -14,7 +14,7 @@
 #include <string>
 #include <algorithm>
 
-#define uint32 unsigned long
+#define uint32 unsigned int
 #define uint64 unsigned long long
 
 namespace chr = std::chrono;
@@ -302,6 +302,15 @@ __device__ void multiplyAdd64Hi(const uint64 & multiplicand, const uint64 & mult
 		: "l"(multiplicand), "l"(multiplier), "l"(*accumulate));
 }
 
+__device__ void subtractModIfMoreThanMod(uint64 & value, const uint64 & mod) {
+	asm("{\n\t"
+		".reg .u64        t0;\n\t"
+		"sub.u64          t0, %1, %2;\n\t"
+		"min.u64          %0, t0, %1;\n\t"
+		"}"
+		: "=l"(value)
+		: "l"(value), "l"(mod));
+}
 
 //using R=2^32, performs the 2-word montgomery reduction on the number represented by hi and lo
 __device__ void montgomeryAddAndShift32Bit(uint64 & hi, uint64 & lo, const uint64 & mod, const uint32 & mprime) {
@@ -493,7 +502,7 @@ __device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 
 
 	montgomeryAddAndShift32Bit(output, tlo, mod, mprime);
 
-	output = output - (mod & -((output >= mod)));
+	subtractModIfMoreThanMod(output, mod);
 }
 
 __device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result) {
@@ -509,12 +518,46 @@ __device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, co
 	
 }
 
+__device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result, int shift, int negative) {
+	if (!r) return;
+
+	uint64 q0 = (-r)*mPrime;
+	uint64 q1 = -(1LLU) - __umul64hi(mod, q0);
+	q1 *= mPrime;
+
+	/*if (atomicAdd(&printOnce, 1) < 5) {
+		printf("%d %llu    %016llX%016llX\n", shift, mod, q1, q0);
+	}*/
+
+	q0 >>= shift;
+
+	if(shift <= 64) q0 = q0 + (q1 << (64 - shift));
+	else q0 = q0 + (q1 >> (shift - 64));
+	q1 >>= shift;
+
+	//if (atomicAdd(&printOnce, 1) < 5) {
+		printf("%d %llu    %016llX%016llX\n", shift, mod, q1, q0);
+	//}
+
+	if (!negative) {
+		result[0] += q0;
+		result[1] += q1;
+		if (result[0] < q0) result[1]++;
+	}
+	else {
+		result[0] -= q0;
+		result[1] -= q1;
+		if (result[0] > q0) result[1]--;
+	}
+
+}
+
 //using left-to-right binary exponentiation
 //the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
 //adds the 128 bit number representing ((2^exp)%mod)/mod to result
-__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract) {
+__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract, uint64 expMask) {
 
 	uint64 output = 1;
 	uint32 mPrime;
@@ -524,54 +567,53 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 	//we only need mPrime though
 	modInverseNewtonsMethod32and64(mod, mPrime, mPrime2);
 
-	
-	if (exp < subtract) return;
 	exp = exp - subtract;
 
-	if (exp) {
+	int shift = 0;
 
-		//find 2 in montgomery space
-		uint64 maxMod = int64MaxBit % mod;
-		maxMod <<= 1;
-		if (maxMod >= mod) maxMod -= mod;
-		output = maxMod << 1;
-		if (output >= mod) output -= mod;
+	if (exp < 128) {
+		shift = 128 - exp;
+		exp = 128;
+		expMask = 128LLU;
+	}
 
+	//find 2 in montgomery space
+	output = int64MaxBit % mod;
+	output <<= 1;
+	subtractModIfMoreThanMod(output, mod);
+	output <<= 1;
+	subtractModIfMoreThanMod(output, mod);
 
-		//shift represents number of bits needed to shift highest set bit in exp
-		//into the lowest bit
-		int shiftToLittleBits = 63 - __clzll(exp);
-		//if shift is negative set to zero
-		shiftToLittleBits *= (shiftToLittleBits > 0);
+	//align mask with highest set bit in exp
+	while (expMask > exp) expMask >>= 1;
 
-		while (shiftToLittleBits) {
+	//shift mask to after highest set bit
+	expMask >>= 1;
 
-			montgomerySquare(output, mod, mPrime, output);//result^2
-			//montgomerySquare(output, mod, mPrime, output);//result^4
+	while (expMask) {
 
-			shiftToLittleBits -= 1;
+		montgomerySquare(output, mod, mPrime, output);//result^2
+		//montgomerySquare(output, mod, mPrime, output);//result^4
 
-			int binaryDigit = (exp >> shiftToLittleBits) & 1;
-
-			if (binaryDigit) {
-				output <<= 1;
-				if (output >= mod) output -= mod;
-			}
+		if (exp & expMask) {
+			output <<= 1;
+			subtractModIfMoreThanMod(output, mod);
 		}
 
-		//convert result out of montgomery form
-		montgomeryMult(output, 1, mod, mPrime, output);
+		//load next bit
+		expMask >>= 1;
 	}
-	//else if (exp == 64) {
-	//	output = int64MaxBit % mod;
-	//	output <<= 1;
-	//	if (output >= mod) output -= mod;
-	//}
-	//else output = (1LLU << exp) % mod;
 
-	if (negative) output = mod - output;
+	//convert result out of montgomery form
+	montgomeryMult(output, 1, mod, mPrime, output);
 
-	fixedPointDivisionExact(mod, output, -mPrime2, result);
+	if (shift) {
+		fixedPointDivisionExactWithShift(mod, output, -mPrime2, result, shift, negative);
+	}
+	else {
+		if (negative) output = mod - output;
+		fixedPointDivisionExact(mod, output, -mPrime2, result);
+	}
 }
 
 //stride over all parts of summation in bbp formula where k <= n
@@ -579,21 +621,25 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
 	for (uint64 k = start; k <= end; k += stride) {
 		uint64 exp = startingExponent - (k*10LLU);
+		//shift represents number of bits needed to shift highest set bit in exp
+		//into the lowest bit
+		int shiftToLittleBits = 63 - __clzll(exp);
+		uint64 mask = 1LLU << shiftToLittleBits;
 		uint64 mod = 4 * k + 1;
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 1);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 3, mask);
 		mod += 2;//4k + 3
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 8, mask);
 		mod = 10 * k + 1;
 		//would need to make last parameter -2, but negative numbers are not allowed
-		modExpLeftToRight(exp + 2, mod, output->s, k & 1, 0);
+		modExpLeftToRight(exp, mod, output->s, k & 1, 0, mask);
 		mod += 2;//10k + 3
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 0);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 2, mask);
 		mod += 2;//10k + 5
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 4);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6, mask);
 		mod += 2;//10k + 7
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 4);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6, mask);
 		mod += 2;//10k + 9
-		modExpLeftToRight(exp, mod, output->s , k & 1, 6);
+		modExpLeftToRight(exp, mod, output->s , k & 1, 8, mask);
 		if (!progressCheck) {
 			//printf("%llu\n", exp);
 			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
@@ -791,8 +837,8 @@ int main()
 
 		uint64 sumEnd = 0;
 
-		uint64 startingExponent = (4LLU * hexDigitPosition) + 128LLU;
-		sumEnd = (4LLU * hexDigitPosition) / 10LLU;
+		uint64 startingExponent = (4LLU * hexDigitPosition) + 128LLU + 2LLU;
+		sumEnd = (4LLU * hexDigitPosition - 6LLU + 128LLU) / 10LLU;
 
 		uint64 beginFrom = 0;
 		sJ cudaResult;
