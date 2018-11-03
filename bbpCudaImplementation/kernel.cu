@@ -525,19 +525,10 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 	uint64 q1 = -(1LLU) - __umul64hi(mod, q0);
 	q1 *= mPrime;
 
-	/*if (atomicAdd(&printOnce, 1) < 5) {
-		printf("%d %llu    %016llX%016llX\n", shift, mod, q1, q0);
-	}*/
-
 	q0 >>= shift;
-
 	if(shift <= 64) q0 = q0 + (q1 << (64 - shift));
 	else q0 = q0 + (q1 >> (shift - 64));
 	q1 >>= shift;
-
-	//if (atomicAdd(&printOnce, 1) < 5) {
-		printf("%d %llu    %016llX%016llX\n", shift, mod, q1, q0);
-	//}
 
 	if (!negative) {
 		result[0] += q0;
@@ -545,9 +536,10 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 		if (result[0] < q0) result[1]++;
 	}
 	else {
+		uint64 check = result[0];
 		result[0] -= q0;
 		result[1] -= q1;
-		if (result[0] > q0) result[1]--;
+		if (result[0] > check) result[1]--;
 	}
 
 }
