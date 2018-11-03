@@ -12,7 +12,7 @@
 #include <iostream>
 #ifdef __linux__
 #include <experimental/filesystem>
-#else _WIN64
+#elif _WIN64
 #include <filesystem>
 #endif
 #include <string>
@@ -23,7 +23,7 @@
 
 namespace chr = std::chrono;
 
-#if __CUDA_ARCH__ >= 700
+#if ONEGPU
 const int totalGpus = 1;
 const uint64 strideMultiplier = 1024;
 #else
@@ -35,7 +35,7 @@ const uint64 strideMultiplier = 64;
 const int threadCountPerBlock = 128;
 
 //this is more difficult to optimize but seems to not like odd numbers
-#if __CUDA_ARCH__ >= 700
+#if ONEGPU
 const int blockCount = 800;
 #else
 const int blockCount = 2240;
@@ -334,11 +334,11 @@ __device__ void montgomeryAddAndShift32Bit(uint64 & hi, uint64 & lo, const uint6
 	//_lo : low 32 bits of result
 	//_hi : high 32 bits of result
 	asm("{\n\t"
-		".reg .u32          t0, t1, t2, t3, z0, z1, m0, m1;\n\t"
-		"mov.b64           {m0, m1}, %4;\n\t" //splits mod into m0 and m1
-		"mov.b64           {t0, t1}, %2;\n\t" //splits lo into hi and lo 32 bit words
-		"mov.b64           {t2, t3}, %3;\n\t" //splits hi into hi and lo 32 bit words
-		"mul.lo.u32         z0, %5, t0;\n\t" //z0 =  lo(mprime*lolo)
+		".reg .u32          t0, t1, t2, t3, z0, m0, m1;\n\t"
+		"mov.b64           {m0, m1}, %3;\n\t" //splits mod into m0 and m1
+		"mov.b64           {t0, t1}, %1;\n\t" //splits lo into hi and lo 32 bit words
+		"mov.b64           {t2, t3}, %2;\n\t" //splits hi into hi and lo 32 bit words
+		"mul.lo.u32         z0, %4, t0;\n\t" //z0 =  lo(mprime*lolo)
 		"mad.lo.cc.u32      t0, z0, m0, t0;\n\t" //t0 = lolo + lo(t0 * z0)
 		"madc.hi.cc.u32     t1, z0, m0, t1;\n\t"
 		"addc.cc.u32        t2,  0, t2;\n\t"
@@ -346,16 +346,15 @@ __device__ void montgomeryAddAndShift32Bit(uint64 & hi, uint64 & lo, const uint6
 		"mad.lo.cc.u32      t1, z0, m1, t1;\n\t"
 		"madc.hi.cc.u32     t2, z0, m1, t2;\n\t"
 		"addc.u32           t3,  0, t3;\n\t"
-		"mul.lo.u32         z1, %5, t1;\n\t" //z1 =  lo(mprime*t1)
-		"mad.lo.cc.u32      t1, z1, m0, t1;\n\t"
-		"madc.hi.cc.u32     t2, z1, m0, t2;\n\t"
+		"mul.lo.u32         z0, %4, t1;\n\t" //z0 =  lo(mprime*t1)
+		"mad.lo.cc.u32      t1, z0, m0, t1;\n\t"
+		"madc.hi.cc.u32     t2, z0, m0, t2;\n\t"
 		"addc.u32           t3,  0, t3;\n\t"
-		"mad.lo.cc.u32      t2, z1, m1, t2;\n\t" //t0 = lolo + lo(t0 * z0)
-		"madc.hi.u32        t3, z1, m1, t3;\n\t"
-		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
-		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		"mad.lo.cc.u32      t2, z0, m1, t2;\n\t" //t0 = lolo + lo(t0 * z0)
+		"madc.hi.u32        t3, z0, m1, t3;\n\t"
+		"mov.b64            %0, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
 		"}"
-		: "=l"(lo), "=l"(hi)
+		: "=l"(hi)
 		: "l"(lo), "l"(hi), "l"(mod), "r"(mprime));
 }
 
@@ -445,21 +444,21 @@ __device__ void modInverseNewtonsMethod(uint64 n, uint64 & output) {
 	output = -output;
 }
 
-//finds output such that (n * output) % 2^32 = -1
-__device__ void modInverseNewtonsMethod32and64(uint64 n, uint32 & output, uint64 & output2) {
-	output2 = (n * 3LLU) ^ 2LLU;
-
-	for (int i = 0; i < 4; i++) {
-		output2 = output2 * (2LLU - (n * output2));
-	}
-
-	//truncate for 32-bit result
-	output = output2;
-
-	//we have (n * output) % 2^32 = 1, so we need to invert it
-	output = -output;
-	output2 = -output2;
-}
+////finds output such that (n * output) % 2^32 = -1
+//__device__ void modInverseNewtonsMethod32and64(uint64 n, uint32 & output, uint64 & output2) {
+//	output2 = (n * 3LLU) ^ 2LLU;
+//
+//	for (int i = 0; i < 4; i++) {
+//		output2 = output2 * (2LLU - (n * output2));
+//	}
+//
+//	//truncate for 32-bit result
+//	output = output2;
+//
+//	//we have (n * output) % 2^32 = 1, so we need to invert it
+//	output = -output;
+//	output2 = -output2;
+//}
 
 //montgomery multiplication method from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
 //slightly modified to use more efficient 64 bit multiply-adds in PTX assembly
@@ -567,12 +566,13 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract, uint64 expMask) {
 
 	uint64 output = 1;
-	uint32 mPrime;
-	uint64 mPrime2;
+	uint64 mPrime;
 
 	//finds rInverse*2^64 - mPrime*mod = 1
 	//we only need mPrime though
-	modInverseNewtonsMethod32and64(mod, mPrime, mPrime2);
+	modInverseNewtonsMethod(mod, mPrime);
+
+	uint32 mPrime32 = mPrime;
 
 	exp = exp - subtract;
 
@@ -599,7 +599,7 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 	while (expMask) {
 
-		montgomerySquare(output, mod, mPrime, output);//result^2
+		montgomerySquare(output, mod, mPrime32, output);//result^2
 		//montgomerySquare(output, mod, mPrime, output);//result^4
 
 		if (exp & expMask) {
@@ -612,14 +612,17 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 	}
 
 	//convert result out of montgomery form
-	montgomeryMult(output, 1, mod, mPrime, output);
+	//montgomeryMult(output, 1, mod, mPrime32, output);
+	uint64 output2 = output;
+	output = 0;
+	montgomeryAddAndShift32Bit(output, output2, mod, mPrime32);
 
 	if (shift) {
-		fixedPointDivisionExactWithShift(mod, output, -mPrime2, result, shift, negative);
+		fixedPointDivisionExactWithShift(mod, output, -mPrime, result, shift, negative);
 	}
 	else {
 		if (negative) output = mod - output;
-		fixedPointDivisionExact(mod, output, -mPrime2, result);
+		fixedPointDivisionExact(mod, output, -mPrime, result);
 	}
 }
 
@@ -662,7 +665,7 @@ __global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExpon
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
 	uint64 start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
-	bbp(startingExponent, start, end, stride, c + gridId, progress, progressCheck);
+	bbp(startingExponent, start, end, stride, c + gridId, progress, !!progressCheck);
 }
 
 //stride over current leaves of reduce tree
@@ -1153,7 +1156,7 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 		}
 
 		//give the rest of the computer some gpu time to reduce system choppiness
-#if __CUDA_ARCH__ < 700
+#if ONEGPU
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 #endif
 	}
