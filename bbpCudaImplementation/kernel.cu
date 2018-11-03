@@ -10,7 +10,11 @@
 #include <deque>
 #include <atomic>
 #include <iostream>
+#ifdef __linux__
+#include <experimental/filesystem>
+#else _WIN64
 #include <filesystem>
+#endif
 #include <string>
 #include <algorithm>
 
