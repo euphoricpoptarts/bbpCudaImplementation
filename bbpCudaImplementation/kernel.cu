@@ -19,14 +19,25 @@
 
 namespace chr = std::chrono;
 
+#if __CUDA_ARCH__ >= 700
+const int totalGpus = 1;
+const uint64 strideMultiplier = 1024;
+#else
 const int totalGpus = 2;
+const uint64 strideMultiplier = 64;
+#endif
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
 const int threadCountPerBlock = 128;
-//this is more difficult to optimize but seems to not like odd numbers
-const int blockCount = 2240;
 
-__device__ __constant__ const uint64 baseSystem = 2;
+//this is more difficult to optimize but seems to not like odd numbers
+#if __CUDA_ARCH__ >= 700
+const int blockCount = 800;
+#else
+const int blockCount = 2240;
+#endif
+
+//__device__ __constant__ const uint64 baseSystem = 2;
 //__device__  __constant__ const int baseExpOf2 = 10;
 
 __device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
@@ -1078,7 +1089,7 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 
 	stride =  (uint64) size * (uint64) totalGpus;
 
-	launchWidth = stride * 64LLU;
+	launchWidth = stride * strideMultiplier;
 
 	//need to round up
 	//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
@@ -1138,7 +1149,9 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 		}
 
 		//give the rest of the computer some gpu time to reduce system choppiness
+#if __CUDA_ARCH__ < 700
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#endif
 	}
 
 	cudaStatus = reduceSJ(dev_c, size);
