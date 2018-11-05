@@ -195,3 +195,59 @@ __device__ void modExp(unsigned long long base, long exp, long mod, long *output
 	result %= mod;
 	*output = result;
 }
+
+//greatest common denominator method pulled from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
+//modified for use-case where R is always 2^64
+
+/* C program implementing the extended binary GCD algorithm. C.f.
+http://www.ucl.ac.uk/~ucahcjm/combopt/ext_gcd_python_programs.pdf. This
+is a modification of that routine in that we find s and t s.t.
+gcd(a, b) = s*a - t*b,
+rather than the same expression except with a + sign.
+This routine has been greatly simplified to take advantage of the
+facts that in the MM use, argument a is a power of 2, and b is odd. Thus
+there are no common powers of 2 to eliminate in the beginning. The
+parent routine has two loops. The first drives down argument a until it
+is 1, modifying u and v in the process. The second loop modifies s and
+t, but because a = 1 on entry to the second loop, it can be easily seen
+that the second loop doesn't alter u or v. Hence the result we want is u
+and v from the end of the first loop, and we can delete the second loop.
+The intermediate and final results are always > 0, so there is no
+trouble with negative quantities. Must have a either 0 or a power of 2
+<= 2**63. A value of 0 for a is treated as 2**64. b can be any 64-bit
+value.
+Parameter a is half what it "should" be. In other words, this function
+does not find u and v st. u*a - v*b = 1, but rather u*(2a) - v*b = 1. */
+
+__device__ void xbinGCD(uint64 b, uint64 *pv)
+{
+	uint64 alpha, beta, u, v;
+	//printf("Doing GCD(%llx, %llx)\n", a, b);
+
+	u = 1; v = 0;
+	alpha = int64MaxBit; beta = b;         // Note that alpha is
+								 // even and beta is odd.
+
+								 /* The invariant maintained from here on is:
+								 2a = u*2*alpha - v*beta. */
+
+								 // printf("Before, a u v = %016llx %016llx %016llx\n", a, u, v);
+	int stop = 64;
+	while (stop) {
+		stop--;
+		if ((u & 1) == 0) {             // Delete a common
+			u = u >> 1; v = v >> 1;      // factor of 2 in
+		}                               // u and v.
+		else {
+			/* We want to set u = (u + beta) >> 1, but
+			that can overflow, so we use Dietz's method. */
+			u = ((u ^ beta) >> 1) + (u & beta);
+			v = (v >> 1) + alpha;
+		}
+		//    printf("After,  a u v = %016llx %016llx %016llx\n", a, u, v);
+	}
+
+	// printf("At end,    a u v = %016llx %016llx %016llx\n", a, u, v);
+	*pv = v;
+	return;
+}

@@ -358,6 +358,15 @@ __device__ void montgomeryAddAndShift32Bit(uint64 & hi, uint64 & lo, const uint6
 		: "l"(lo), "l"(hi), "l"(mod), "r"(mprime));
 }
 
+__device__ void add128Bit(uint64 & addendHi, uint64 & addendLo, uint64 augendHi, uint64 augendLo) {
+	asm("{\n\t"
+		"add.cc.u64         %1, %3, %5;\n\t"
+		"addc.u64           %0, %2, %4;\n\t"
+		"}"
+		: "=l"(addendHi), "=l"(addendLo)
+		: "l"(addendHi), "l"(addendLo), "l"(augendHi), "l"(augendLo));
+}
+
 //calculates the 128 bit product of multiplicand and multiplier
 //takes the highest 64 bits and multiplies it by maxMod (2^64 % mod) and adds it to the low 64 bits, repeating until the highest 64 bits are zero
 //this takes (log2(mod)) / (64 - log2(mod)) steps
@@ -371,62 +380,6 @@ __device__ void modMultiply64Bit(uint64 multiplicand, uint64 multiplier, const u
 	}
 	if(result >= mod) result %= mod;
 	output = result;
-}
-
-//greatest common denominator method pulled from http://www.hackersdelight.org/hdcodetxt/mont64.c.txt
-//modified for use-case where R is always 2^64
-
-/* C program implementing the extended binary GCD algorithm. C.f.
-http://www.ucl.ac.uk/~ucahcjm/combopt/ext_gcd_python_programs.pdf. This
-is a modification of that routine in that we find s and t s.t.
-gcd(a, b) = s*a - t*b,
-rather than the same expression except with a + sign.
-This routine has been greatly simplified to take advantage of the
-facts that in the MM use, argument a is a power of 2, and b is odd. Thus
-there are no common powers of 2 to eliminate in the beginning. The
-parent routine has two loops. The first drives down argument a until it
-is 1, modifying u and v in the process. The second loop modifies s and
-t, but because a = 1 on entry to the second loop, it can be easily seen
-that the second loop doesn't alter u or v. Hence the result we want is u
-and v from the end of the first loop, and we can delete the second loop.
-The intermediate and final results are always > 0, so there is no
-trouble with negative quantities. Must have a either 0 or a power of 2
-<= 2**63. A value of 0 for a is treated as 2**64. b can be any 64-bit
-value.
-Parameter a is half what it "should" be. In other words, this function
-does not find u and v st. u*a - v*b = 1, but rather u*(2a) - v*b = 1. */
-
-__device__ void xbinGCD(uint64 b, uint64 *pv)
-{
-	uint64 alpha, beta, u, v;
-	//printf("Doing GCD(%llx, %llx)\n", a, b);
-
-	u = 1; v = 0;
-	alpha = int64MaxBit; beta = b;         // Note that alpha is
-								 // even and beta is odd.
-
-								 /* The invariant maintained from here on is:
-								 2a = u*2*alpha - v*beta. */
-
-								 // printf("Before, a u v = %016llx %016llx %016llx\n", a, u, v);
-	int stop = 64;
-	while (stop) {
-		stop--;
-		if ((u & 1) == 0) {             // Delete a common
-			u = u >> 1; v = v >> 1;      // factor of 2 in
-		}                               // u and v.
-		else {
-			/* We want to set u = (u + beta) >> 1, but
-			that can overflow, so we use Dietz's method. */
-			u = ((u ^ beta) >> 1) + (u & beta);
-			v = (v >> 1) + alpha;
-		}
-		//    printf("After,  a u v = %016llx %016llx %016llx\n", a, u, v);
-	}
-
-	// printf("At end,    a u v = %016llx %016llx %016llx\n", a, u, v);
-	*pv = v;
-	return;
 }
 
 //finds output such that (n * output) % 2^64 = -1
@@ -526,10 +479,7 @@ __device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, co
 	uint64 q1 = -(1LLU) - __umul64hi(mod, q0);
 	q1 *= mPrime;
 
-	result[0] += q0;
-	result[1] += q1;
-	if (result[0] < q0) result[1]++;
-	
+	add128Bit(result[1], result[0], q1, q0);
 }
 
 __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result, int shift, int negative) {
@@ -584,6 +534,9 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 		expMask = 128LLU;
 	}
 
+	//this makes it unnecessary to convert out of montgomery space
+	exp -= 64;
+
 	//find 2 in montgomery space
 	output = int64MaxBit % mod;
 	output <<= 1;
@@ -611,12 +564,6 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 		expMask >>= 1;
 	}
 
-	//convert result out of montgomery form
-	//montgomeryMult(output, 1, mod, mPrime32, output);
-	uint64 output2 = output;
-	output = 0;
-	montgomeryAddAndShift32Bit(output, output2, mod, mPrime32);
-
 	if (shift) {
 		fixedPointDivisionExactWithShift(mod, output, -mPrime, result, shift, negative);
 	}
@@ -626,7 +573,7 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 	}
 }
 
-//stride over all parts of summation in bbp formula where k <= n
+//stride over all parts of summation in bbp formula where k <= startingExponent
 //to compute partial sJ sums
 __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
 	for (uint64 k = start; k <= end; k += stride) {
