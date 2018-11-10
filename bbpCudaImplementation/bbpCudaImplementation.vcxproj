@@ -82,9 +82,12 @@
       <GenerateRelocatableDeviceCode>false</GenerateRelocatableDeviceCode>
       <RuntimeChecks>InheritFromHost</RuntimeChecks>
       <TypeInfo>InheritFromHost</TypeInfo>
-      <HostDebugInfo>true</HostDebugInfo>
+      <HostDebugInfo>false</HostDebugInfo>
       <CodeGeneration>compute_61,sm_61</CodeGeneration>
-      <GenerateLineInfo>true</GenerateLineInfo>
+      <GenerateLineInfo>false</GenerateLineInfo>
+      <Runtime>InheritFromHost</Runtime>
+      <NvccCompilation>compile</NvccCompilation>
+      <MaxRegCount>42</MaxRegCount>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
