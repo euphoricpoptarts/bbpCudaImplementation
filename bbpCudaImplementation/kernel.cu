@@ -23,30 +23,22 @@
 
 namespace chr = std::chrono;
 
-#ifdef ONEGPU
-const int totalGpus = 1;
-const uint64 strideMultiplier = 1024;
-#else
+std::string propertiesFile = "application.properties";
+
 const int totalGpus = 2;
-const uint64 strideMultiplier = 64;
-#endif
+uint64 strideMultiplier;
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
 const int threadCountPerBlock = 128;
 
 //this is more difficult to optimize but seems to not like odd numbers
-#ifdef ONEGPU
-const int blockCount = 800;
-#else
-const int blockCount = 2240;
-#endif
-
-//__device__ __constant__ const uint64 baseSystem = 2;
-//__device__  __constant__ const int baseExpOf2 = 10;
+int blockCount;
 
 __device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
 
 __device__ int printOnce = 0;
+
+int primaryGpu;
 
 struct sJ {
 	uint64 s[2] = { 0, 0};
@@ -389,6 +381,27 @@ cudaError_t reduceSJ(sJ *c, unsigned int size) {
 	return cudaStatus;
 }
 
+int loadProperties() {
+	std::cout << "Loading properties from " << propertiesFile << std::endl;
+	FILE * propF = fopen(propertiesFile.c_str(), "r");
+
+	if (propF == NULL) {
+		std::cout << "Could not open " << propertiesFile << "!" << std::endl;
+		return 1;
+	}
+
+	int readLines = 0;
+
+	readLines += fscanf(propF, "%llu", &strideMultiplier);
+	readLines += fscanf(propF, "%d", &blockCount);
+	readLines += fscanf(propF, "%d", &primaryGpu);
+	if (readLines != 3) {
+		std::cout << "Properties loading failed!" << std::endl;
+		return 1;
+	}
+	return 0;
+}
+
 int checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * previousTime) {
 	std::string target = "digit" + std::to_string(digit) + "Base";
 	std::string pToFile;
@@ -456,6 +469,9 @@ int checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * 
 int main()
 {
 	try {
+
+		if (loadProperties()) return 1;
+
 		const int arraySize = threadCountPerBlock * blockCount;
 		uint64 hexDigitPosition;
 		std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
@@ -774,9 +790,9 @@ void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output,
 		}
 
 		//give the rest of the computer some gpu time to reduce system choppiness
-#ifdef ONEGPU
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
-#endif
+		if (primaryGpu) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
 	}
 
 	cudaStatus = reduceSJ(dev_c, size);
