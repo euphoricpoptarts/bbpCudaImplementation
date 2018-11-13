@@ -576,3 +576,44 @@ uint64 finalizeDigit(sJ input, uint64 n) {
 	printf("hexDigit = %.8f\n", hexDigit);
 	return (uint64)hexDigit;
 }
+
+PPROGRESSDATA setupProgress() {
+	PPROGRESSDATA threadData = new PROGRESSDATA();
+
+	std::atomic_init(&threadData->dataWritten, 0);
+
+	//these variables are linked between host and device memory allowing each to communicate about progress
+	volatile uint64 *currProgHost, *currProgDevice;
+
+	threadData->status = new sJ[totalGpus];
+	threadData->nextStrideBegin = new uint64[totalGpus];
+
+	//allow device to map host memory for progress ticker
+	threadData->error = cudaSetDeviceFlags(cudaDeviceMapHost);
+	if (threadData->error != cudaSuccess) {
+		fprintf(stderr, "cudaSetDeviceFlags failed with error: %s\n", cudaGetErrorString(threadData->error));
+		return threadData;
+	}
+
+	// Allocate Host memory for progress ticker
+	threadData->error = cudaHostAlloc((void**)&currProgHost, sizeof(uint64), cudaHostAllocMapped);
+	if (threadData->error != cudaSuccess) {
+		fprintf(stderr, "cudaHostAalloc failed!");
+		return threadData;
+	}
+
+	//create link between between host and device memory for progress ticker
+	threadData->error = cudaHostGetDevicePointer((uint64 **)&currProgDevice, (uint64 *)currProgHost, 0);
+	if (threadData->error != cudaSuccess) {
+		fprintf(stderr, "cudaHostGetDevicePointer failed!");
+		return threadData;
+	}
+
+	*currProgHost = 0;
+
+	threadData->deviceProg = currProgDevice;
+	threadData->currentProgress = currProgHost;
+	threadData->quit = 0;
+
+	return threadData;
+}

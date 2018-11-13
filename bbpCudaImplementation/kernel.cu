@@ -44,9 +44,10 @@ struct sJ {
 	uint64 s[2] = { 0, 0};
 };
 
-typedef struct {
-	volatile uint64 *currentProgress;
-	volatile uint64 *deviceProg;
+class progressData {
+public:
+	volatile uint64 * currentProgress;
+	volatile uint64 * deviceProg;
 	sJ previousCache;
 	double previousTime;
 	sJ * status;
@@ -56,7 +57,49 @@ typedef struct {
 	cudaError_t error;
 	chr::high_resolution_clock::time_point * begin;
 	volatile std::atomic<int> dataWritten;
-} PROGRESSDATA, *PPROGRESSDATA;
+
+	progressData(int gpus) {
+		std::atomic_init(&this->dataWritten, 0);
+
+		//these variables are linked between host and device memory allowing each to communicate about progress
+		volatile uint64 *currProgHost, *currProgDevice;
+
+		this->status = new sJ[gpus];
+		this->nextStrideBegin = new uint64[gpus];
+
+		//allow device to map host memory for progress ticker
+		this->error = cudaSetDeviceFlags(cudaDeviceMapHost);
+		if (this->error != cudaSuccess) {
+			fprintf(stderr, "cudaSetDeviceFlags failed with error: %s\n", cudaGetErrorString(this->error));
+			return;
+		}
+
+		// Allocate Host memory for progress ticker
+		this->error = cudaHostAlloc((void**)&currProgHost, sizeof(uint64), cudaHostAllocMapped);
+		if (this->error != cudaSuccess) {
+			fprintf(stderr, "cudaHostAalloc failed!");
+			return;
+		}
+
+		//create link between between host and device memory for progress ticker
+		this->error = cudaHostGetDevicePointer((uint64 **)&currProgDevice, (uint64 *)currProgHost, 0);
+		if (this->error != cudaSuccess) {
+			fprintf(stderr, "cudaHostGetDevicePointer failed!");
+			return;
+		}
+
+		*currProgHost = 0;
+
+		this->deviceProg = currProgDevice;
+		this->currentProgress = currProgHost;
+		this->quit = 0;
+	}
+
+	~progressData() {
+		delete[] this->status;
+		delete[] this->nextStrideBegin;
+	}
+};
 
 typedef struct {
 	sJ output;
@@ -73,8 +116,7 @@ typedef struct {
 	volatile std::atomic<int> * dataWritten;
 } BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
 
-PPROGRESSDATA setupProgress();
-void progressCheck(PPROGRESSDATA data);
+void progressCheck(progressData * data);
 void cudaBbpLauncher(PBBPLAUNCHERDATA dataV);
 
 //adds all elements of addend and augend, storing in addend
@@ -496,17 +538,17 @@ int main()
 		std::thread * handles = new std::thread[totalGpus];
 		BBPLAUNCHERDATA * gpuData = new BBPLAUNCHERDATA[totalGpus];
 
-		PPROGRESSDATA prog = setupProgress();
+		progressData prog(totalGpus);
 
 		chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
 
-		if (prog->error != cudaSuccess) return 1;
-		prog->begin = &start;
-		prog->maxProgress = sumEnd;
-		prog->previousCache = cudaResult;
-		prog->previousTime = previousTime;
+		if (prog.error != cudaSuccess) return 1;
+		prog.begin = &start;
+		prog.maxProgress = sumEnd;
+		prog.previousCache = cudaResult;
+		prog.previousTime = previousTime;
 
-		std::thread progThread(progressCheck, prog);
+		std::thread progThread(progressCheck, &prog);
 
 		for (int i = 0; i < totalGpus; i++) {
 
@@ -515,10 +557,10 @@ int main()
 			gpuData[i].exponent = startingExponent;
 			gpuData[i].totalGpus = totalGpus;
 			gpuData[i].size = arraySize;
-			gpuData[i].deviceProg = prog->deviceProg;
-			gpuData[i].status = &(prog->status[i]);
-			gpuData[i].dataWritten = &(prog->dataWritten);
-			gpuData[i].nextStrideBegin = &(prog->nextStrideBegin[i]);
+			gpuData[i].deviceProg = prog.deviceProg;
+			gpuData[i].status = &(prog.status[i]);
+			gpuData[i].dataWritten = &(prog.dataWritten);
+			gpuData[i].nextStrideBegin = &(prog.nextStrideBegin[i]);
 			gpuData[i].beginFrom = beginFrom;
 
 			handles[i] = std::thread(cudaBbpLauncher, &(gpuData[i]));
@@ -543,13 +585,9 @@ int main()
 		}
 
 		//tell the progress thread to quit
-		prog->quit = 1;
+		prog.quit = 1;
 
 		progThread.join();
-
-		delete[] prog->status;
-		delete[] prog->nextStrideBegin;
-		free(prog);
 
 		delete[] handles;
 		delete[] gpuData;
@@ -579,49 +617,9 @@ int main()
 	}
 }
 
-PPROGRESSDATA setupProgress() {
-	PPROGRESSDATA threadData = new PROGRESSDATA();
-
-	std::atomic_init(&threadData->dataWritten, 0);
-
-	//these variables are linked between host and device memory allowing each to communicate about progress
-	volatile uint64 *currProgHost, *currProgDevice;
-
-	threadData->status = new sJ[totalGpus];
-	threadData->nextStrideBegin = new uint64[totalGpus];
-
-	//allow device to map host memory for progress ticker
-	threadData->error = cudaSetDeviceFlags(cudaDeviceMapHost);
-	if (threadData->error != cudaSuccess) {
-		fprintf(stderr, "cudaSetDeviceFlags failed with error: %s\n", cudaGetErrorString(threadData->error));
-		return threadData;
-	}
-
-	// Allocate Host memory for progress ticker
-	threadData->error = cudaHostAlloc((void**)&currProgHost, sizeof(uint64), cudaHostAllocMapped);
-	if (threadData->error != cudaSuccess) {
-		fprintf(stderr, "cudaHostAalloc failed!");
-		return threadData;
-	}
-
-	//create link between between host and device memory for progress ticker
-	threadData->error = cudaHostGetDevicePointer((uint64 **)&currProgDevice, (uint64 *)currProgHost, 0);
-	if (threadData->error != cudaSuccess) {
-		fprintf(stderr, "cudaHostGetDevicePointer failed!");
-		return threadData;
-	}
-
-	*currProgHost = 0;
-
-	threadData->deviceProg = currProgDevice;
-	threadData->currentProgress = currProgHost;
-	threadData->quit = 0;
-
-	return threadData;
-}
-
 //this function is meant to be run by an independent thread to output progress to the console
-void progressCheck(PPROGRESSDATA progP) {
+//TODO: figure out why this needed to be a pointer to work
+void progressCheck(progressData * progP) {
 
 	std::deque<double> progressQ;
 	std::deque<chr::high_resolution_clock::time_point> timeQ;
