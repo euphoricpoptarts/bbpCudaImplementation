@@ -25,7 +25,7 @@ namespace chr = std::chrono;
 
 std::string propertiesFile = "application.properties";
 
-const int totalGpus = 2;
+int totalGpus;
 uint64 strideMultiplier;
 
 //warpsize is 32 so optimal value is probably always a multiple of 32
@@ -49,8 +49,8 @@ typedef struct {
 	volatile uint64 *deviceProg;
 	sJ previousCache;
 	double previousTime;
-	sJ status[totalGpus];
-	volatile uint64 nextStrideBegin[totalGpus];
+	sJ * status;
+	volatile uint64 * nextStrideBegin;
 	uint64 maxProgress;
 	volatile int quit = 0;
 	cudaError_t error;
@@ -472,6 +472,8 @@ int main()
 
 		if (loadProperties()) return 1;
 
+		cudaGetDeviceCount(&totalGpus);
+
 		const int arraySize = threadCountPerBlock * blockCount;
 		uint64 hexDigitPosition;
 		std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
@@ -491,8 +493,8 @@ int main()
 			return 1;
 		}
 
-		std::thread handles[totalGpus];
-		BBPLAUNCHERDATA gpuData[totalGpus];
+		std::thread * handles = new std::thread[totalGpus];
+		BBPLAUNCHERDATA * gpuData = new BBPLAUNCHERDATA[totalGpus];
 
 		PPROGRESSDATA prog = setupProgress();
 
@@ -545,7 +547,12 @@ int main()
 
 		progThread.join();
 
+		delete[] prog->status;
+		delete[] prog->nextStrideBegin;
 		free(prog);
+
+		delete[] handles;
+		delete[] gpuData;
 
 		//uint64 hexDigit = finalizeDigit(cudaResult, hexDigitPosition);
 
@@ -579,6 +586,9 @@ PPROGRESSDATA setupProgress() {
 
 	//these variables are linked between host and device memory allowing each to communicate about progress
 	volatile uint64 *currProgHost, *currProgDevice;
+
+	threadData->status = new sJ[totalGpus];
+	threadData->nextStrideBegin = new uint64[totalGpus];
 
 	//allow device to map host memory for progress ticker
 	threadData->error = cudaSetDeviceFlags(cudaDeviceMapHost);
