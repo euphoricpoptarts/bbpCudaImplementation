@@ -98,6 +98,7 @@ public:
 	~progressData() {
 		delete[] this->status;
 		delete[] this->nextStrideBegin;
+		//TODO: delete the device/host pointers?
 	}
 };
 
