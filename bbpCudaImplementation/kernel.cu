@@ -44,6 +44,13 @@ struct sJ {
 	uint64 s[2] = { 0, 0};
 };
 
+//adds all elements of addend and augend, storing in addend
+__device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
+	addend->s[0] += augend->s[0];
+	addend->s[1] += augend->s[1];
+	if (addend->s[0] < augend->s[0]) addend->s[1]++;
+}
+
 class progressData {
 public:
 	volatile uint64 * currentProgress;
@@ -100,6 +107,87 @@ public:
 		delete[] this->nextStrideBegin;
 		//TODO: delete the device/host pointers?
 	}
+
+	//this function is meant to be run by an independent thread to output progress to the console
+	void progressCheck() {
+
+		std::deque<double> progressQ;
+		std::deque<chr::high_resolution_clock::time_point> timeQ;
+		int count = 0;
+		while (!this->quit) {
+			count++;
+			double progress = (double)(*(this->currentProgress)) / (double)this->maxProgress;
+
+			chr::high_resolution_clock::time_point now = chr::high_resolution_clock::now();
+			progressQ.push_front(progress);
+			timeQ.push_front(now);
+
+			//progressQ and timeQ should be same size at all times
+			if (progressQ.size() > 100) {
+				progressQ.pop_back();
+				timeQ.pop_back();
+			}
+
+			double progressInPeriod = progressQ.front() - progressQ.back();
+			double elapsedPeriod = chr::duration_cast<chr::duration<double>>(timeQ.front() - timeQ.back()).count();
+			double progressPerSecond = progressInPeriod / elapsedPeriod;
+
+			double timeEst = (1.0 - progress) / (progressPerSecond);
+			//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
+			double time = this->previousTime + (chr::duration_cast<chr::duration<double>>(now - *this->begin)).count();
+			//only print every 10th cycle or 0.1 seconds
+			if (count == 10) {
+				count = 0;
+				printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond, time);
+			}
+
+			int expected = totalGpus;
+
+			if (std::atomic_compare_exchange_strong(&this->dataWritten, &expected, 0)) {
+
+				//ensure all sJs in status are from same stride
+				//this should always be the case since each 1000 strides are separated by about 90 seconds currently
+				//it would be very unlikely for one gpu to get 1000 strides ahead of another, unless the GPUs were not the same
+				int sJsAligned = 1;
+				uint64 contProcess = this->nextStrideBegin[0];
+				for (int i = 1; i < totalGpus; i++) sJsAligned &= (this->nextStrideBegin[i] == contProcess);
+
+				if (sJsAligned) {
+
+					char buffer[100];
+
+					double savedProgress = (double)(contProcess - 1LLU) / (double)this->maxProgress;
+
+					snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%09.6f.dat", this->maxProgress, 100.0*savedProgress);
+
+					//would like to do this with ofstream and std::hexfloat
+					//but msvc is a microsoft product so...
+					FILE * file;
+					file = fopen(buffer, "w+");
+					if (file != NULL) {
+						printf("Writing data to disk\n");
+						fprintf(file, "%llu\n", contProcess);
+						fprintf(file, "%a\n", time);
+						sJ currStatus = this->previousCache;
+						for (int i = 0; i < totalGpus; i++) {
+							sJAdd(&currStatus, this->status + i);
+						}
+						for (int i = 0; i < 2; i++) fprintf(file, "%llX\n", currStatus.s[i]);
+						fclose(file);
+					}
+					else {
+						fprintf(stderr, "Error opening file %s\n", buffer);
+					}
+				}
+				else {
+					fprintf(stderr, "sJs are misaligned, could not write to disk!\n");
+					for (int i = 0; i < totalGpus; i++) fprintf(stderr, "sJ %d alignment is %llu\n", i, this->nextStrideBegin[i]);
+				}
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+	}
 };
 
 typedef struct {
@@ -117,15 +205,7 @@ typedef struct {
 	volatile std::atomic<int> * dataWritten;
 } BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
 
-void progressCheck(progressData * data);
 void cudaBbpLauncher(PBBPLAUNCHERDATA dataV);
-
-//adds all elements of addend and augend, storing in addend
-__device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
-	addend->s[0] += augend->s[0];
-	addend->s[1] += augend->s[1];
-	if (addend->s[0] < augend->s[0]) addend->s[1]++;
-}
 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of squaring a 64 bit number
 __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
@@ -549,7 +629,7 @@ int main()
 		prog.previousCache = cudaResult;
 		prog.previousTime = previousTime;
 
-		std::thread progThread(progressCheck, &prog);
+		std::thread progThread(&progressData::progressCheck, &prog);
 
 		for (int i = 0; i < totalGpus; i++) {
 
@@ -615,88 +695,6 @@ int main()
 	catch(...) {
 		printf("oops xD\n");
 		return 1;
-	}
-}
-
-//this function is meant to be run by an independent thread to output progress to the console
-//TODO: figure out why this needed to be a pointer to work
-void progressCheck(progressData * progP) {
-
-	std::deque<double> progressQ;
-	std::deque<chr::high_resolution_clock::time_point> timeQ;
-	int count = 0;
-	while(!progP->quit) {
-		count++;
-		double progress = (double)(*(progP->currentProgress)) / (double)progP->maxProgress;
-
-		chr::high_resolution_clock::time_point now = chr::high_resolution_clock::now();
-		progressQ.push_front(progress);
-		timeQ.push_front(now);
-
-		//progressQ and timeQ should be same size at all times
-		if (progressQ.size() > 100) {
-			progressQ.pop_back();
-			timeQ.pop_back();
-		}
-
-		double progressInPeriod = progressQ.front() - progressQ.back();
-		double elapsedPeriod = chr::duration_cast<chr::duration<double>>(timeQ.front() - timeQ.back()).count();
-		double progressPerSecond = progressInPeriod / elapsedPeriod;
-
-		double timeEst = (1.0 - progress) / (progressPerSecond);
-		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
-		double time = progP->previousTime + (chr::duration_cast<chr::duration<double>>(now - *progP->begin)).count();
-		//only print every 10th cycle or 0.1 seconds
-		if (count == 10) {
-			count = 0;
-			printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond, time);
-		}
-
-		int expected = totalGpus;
-
-		if (std::atomic_compare_exchange_strong(&progP->dataWritten, &expected, 0)) {
-
-			//ensure all sJs in status are from same stride
-			//this should always be the case since each 1000 strides are separated by about 90 seconds currently
-			//it would be very unlikely for one gpu to get 1000 strides ahead of another, unless the GPUs were not the same
-			int sJsAligned = 1;
-			uint64 contProcess = progP->nextStrideBegin[0];
-			for (int i = 1; i < totalGpus; i++) sJsAligned &= (progP->nextStrideBegin[i] == contProcess);
-			
-			if (sJsAligned) {
-
-				char buffer[100];
-
-				double savedProgress = (double) (contProcess - 1LLU) / (double)progP->maxProgress;
-
-				snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%09.6f.dat", progP->maxProgress, 100.0*savedProgress);
-
-				//would like to do this with ofstream and std::hexfloat
-				//but msvc is a microsoft product so...
-				FILE * file;
-				file = fopen(buffer, "w+");
-				if(file != NULL) {
-					printf("Writing data to disk\n");
-					fprintf(file,"%llu\n",contProcess);
-					fprintf(file, "%a\n", time);
-					sJ currStatus = progP->previousCache;
-					for (int i = 0; i < totalGpus; i++) {
-						sJAdd(&currStatus, progP->status + i);
-					}
-					for(int i = 0; i < 2; i++) fprintf(file, "%llX\n", currStatus.s[i]);
-					fclose(file);
-				}
-				else {
-					fprintf(stderr, "Error opening file %s\n", buffer);
-				}
-			}
-			else {
-				fprintf(stderr, "sJs are misaligned, could not write to disk!\n");
-				for (int i = 0; i < totalGpus; i++) fprintf(stderr, "sJ %d alignment is %llu\n", i, progP->nextStrideBegin[i]);
-			}
-		}
-
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 }
 
