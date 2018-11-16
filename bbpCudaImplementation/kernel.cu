@@ -24,25 +24,22 @@
 namespace chr = std::chrono;
 
 std::string propertiesFile = "application.properties";
-
 int totalGpus;
 uint64 strideMultiplier;
-
 //warpsize is 32 so optimal value is probably always a multiple of 32
 const int threadCountPerBlock = 128;
-
 //this is more difficult to optimize but seems to not like odd numbers
 int blockCount;
-
 __device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
-
 __device__ int printOnce = 0;
-
 int primaryGpu;
 
 struct sJ {
 	uint64 s[2] = { 0, 0};
 };
+
+__global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 stride);
+cudaError_t reduceSJ(sJ *c, unsigned int size);
 
 //adds all elements of addend and augend, storing in addend
 __device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
@@ -190,7 +187,8 @@ public:
 	}
 };
 
-typedef struct {
+class bbpLauncher {
+public:
 	sJ output;
 	uint64 digit;
 	uint64 exponent;
@@ -203,9 +201,134 @@ typedef struct {
 	sJ * status;
 	volatile uint64 * nextStrideBegin;
 	volatile std::atomic<int> * dataWritten;
-} BBPLAUNCHERDATA, *PBBPLAUNCHERDATA;
 
-void cudaBbpLauncher(PBBPLAUNCHERDATA dataV);
+	// Helper function for using CUDA
+	void launch()//cudaError_t addWithCuda(sJ *output, unsigned int size, TYPE digit)
+	{
+		int size = this->size;
+		int gpu = this->gpu;
+		int totalGpus = this->totalGpus;
+		uint64 digit = this->digit;
+		volatile uint64 * currProgDevice = this->deviceProg;
+		sJ *dev_c = 0;
+		sJ* c = new sJ[1];
+		sJ *dev_ex = 0;
+
+		cudaError_t cudaStatus;
+
+		uint64 stride, launchWidth, neededLaunches;
+
+		// Choose which GPU to run on, change this on a multi-GPU system.
+		cudaStatus = cudaSetDevice(gpu);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
+			goto Error;
+		}
+
+		// Allocate GPU buffer for temp vector
+		cudaStatus = cudaMalloc((void**)&dev_ex, size * sizeof(sJ));
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
+		// Allocate GPU buffer for output vector
+		cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(sJ));
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
+		stride = (uint64)size * (uint64)totalGpus;
+
+		launchWidth = stride * strideMultiplier;
+
+		//need to round up
+		//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
+		//even when digit/launchWidth is an integer, it is necessary to add 1
+		neededLaunches = ((digit - this->beginFrom) / launchWidth) + 1LLU;
+
+		for (uint64 launch = 0; launch < neededLaunches; launch++) {
+
+			uint64 begin = this->beginFrom + (launchWidth * launch);
+			uint64 end = this->beginFrom + (launchWidth * (launch + 1)) - 1;
+			if (end > digit) end = digit;
+
+			// Launch a kernel on the GPU with one thread for each element.
+			bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, currProgDevice, this->exponent, gpu, begin, end, stride);
+
+			// Check for any errors launching the kernel
+			cudaStatus = cudaGetLastError();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "bbpKernel launch failed on gpu%d: %s\n", gpu, cudaGetErrorString(cudaStatus));
+				goto Error;
+			}
+
+			// cudaDeviceSynchronize waits for the kernel to finish, and returns
+			// any errors encountered during the launch.
+			cudaStatus = cudaDeviceSynchronize();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu 1!\n", cudaStatus);
+				goto Error;
+			}
+
+			//on every 1000th launch write data to status buffer for progress thread to save
+			if (launch % 1000 == 0 && launch) {
+
+				//copy current results into temp array to reduce and update status
+				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ), cudaMemcpyDeviceToDevice);
+				if (cudaStatus != cudaSuccess) {
+					fprintf(stderr, "cudaMemcpy failed in status update!\n");
+					goto Error;
+				}
+
+				cudaStatus = reduceSJ(dev_ex, size);
+
+				if (cudaStatus != cudaSuccess) {
+					goto Error;
+				}
+
+				// Copy result (reduced into first element) from GPU buffer to host memory.
+				cudaStatus = cudaMemcpy(c, dev_ex, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
+				if (cudaStatus != cudaSuccess) {
+					fprintf(stderr, "cudaMemcpy failed in status update!\n");
+					goto Error;
+				}
+
+				*(this->status) = c[0];
+				*(this->nextStrideBegin) = this->beginFrom + (launchWidth * (launch + 1LLU));
+				std::atomic_fetch_add(this->dataWritten, 1);
+			}
+
+			//give the rest of the computer some gpu time to reduce system choppiness
+			if (primaryGpu) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+		}
+
+		cudaStatus = reduceSJ(dev_c, size);
+
+		if (cudaStatus != cudaSuccess) {
+			goto Error;
+		}
+
+		// Copy result (reduced into first element) from GPU buffer to host memory.
+		cudaStatus = cudaMemcpy(c, dev_c, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy failed!\n");
+			goto Error;
+		}
+
+		this->output = c[0];
+
+	Error:
+		free(c);
+		cudaFree(dev_c);
+		cudaFree(dev_ex);
+
+		this->error = cudaStatus;
+	}
+};
 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of squaring a 64 bit number
 __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
@@ -230,14 +353,6 @@ __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
 		"}"
 		: "=l"(*lo), "=l"(*hi)
 		: "l"(multiplicand));
-}
-
-__device__ void multiplyAdd64Hi(const uint64 & multiplicand, const uint64 & multiplier, uint64 * accumulate) {
-	asm("{\n\t"
-		"mad.hi.u64          %0, %1, %2, %3;\n\t"
-		"}"
-		: "=l"(*accumulate)
-		: "l"(multiplicand), "l"(multiplier), "l"(*accumulate));
 }
 
 __device__ void subtractModIfMoreThanMod(uint64 & value, const uint64 & mod) {
@@ -606,7 +721,14 @@ int main()
 
 		uint64 sumEnd = 0;
 
+		//4*hexDigitPosition converts from exponent of 16 to exponent of 2
+		//adding 128 for fixed-point division algorithm
+		//adding 8 for maximum size of coefficient (so that all coefficients can be expressed by subtracting an integer from the exponent)
+		//subtracting 6 for the division by 64 of the whole sum
 		uint64 startingExponent = (4LLU * hexDigitPosition) + 128LLU + 2LLU;
+
+		//the end of the sum does not have the addition by 8 so that all calculations will be a positive exponent of 2 after factoring in the coefficient
+		//this leaves out a couple potentially positive exponents of 2 (could potentially just check subtraction in modExpLeftToRight and keep the addition by 8)
 		sumEnd = (4LLU * hexDigitPosition - 6LLU + 128LLU) / 10LLU;
 
 		uint64 beginFrom = 0;
@@ -617,7 +739,7 @@ int main()
 		}
 
 		std::thread * handles = new std::thread[totalGpus];
-		BBPLAUNCHERDATA * gpuData = new BBPLAUNCHERDATA[totalGpus];
+		bbpLauncher * gpuData = new bbpLauncher[totalGpus];
 
 		progressData prog(totalGpus);
 
@@ -644,7 +766,7 @@ int main()
 			gpuData[i].nextStrideBegin = &(prog.nextStrideBegin[i]);
 			gpuData[i].beginFrom = beginFrom;
 
-			handles[i] = std::thread(cudaBbpLauncher, &(gpuData[i]));
+			handles[i] = std::thread(&bbpLauncher::launch, gpuData + i);
 		}
 
 		cudaError_t cudaStatus;
@@ -696,131 +818,4 @@ int main()
 		printf("oops xD\n");
 		return 1;
 	}
-}
-
-// Helper function for using CUDA
-void cudaBbpLauncher(PBBPLAUNCHERDATA data)//cudaError_t addWithCuda(sJ *output, unsigned int size, TYPE digit)
-{
-	int size = data->size;
-	int gpu = data->gpu;
-	int totalGpus = data->totalGpus;
-	uint64 digit = data->digit;
-	volatile uint64 * currProgDevice = data->deviceProg;
-	sJ *dev_c = 0;
-	sJ* c = new sJ[1];
-	sJ *dev_ex = 0;
-
-	cudaError_t cudaStatus;
-	
-	uint64 stride, launchWidth, neededLaunches;
-
-	// Choose which GPU to run on, change this on a multi-GPU system.
-	cudaStatus = cudaSetDevice(gpu);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-		goto Error;
-	}
-
-	// Allocate GPU buffer for temp vector
-	cudaStatus = cudaMalloc((void**)&dev_ex, size * sizeof(sJ));
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc failed!");
-		goto Error;
-	}
-
-	// Allocate GPU buffer for output vector
-	cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(sJ));
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMalloc failed!");
-		goto Error;
-	}
-
-	stride =  (uint64) size * (uint64) totalGpus;
-
-	launchWidth = stride * strideMultiplier;
-
-	//need to round up
-	//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
-	//even when digit/launchWidth is an integer, it is necessary to add 1
-	neededLaunches = ((digit - data->beginFrom) / launchWidth) + 1LLU;
-
-	for (uint64 launch = 0; launch < neededLaunches; launch++) {
-
-		uint64 begin = data->beginFrom + (launchWidth * launch);
-		uint64 end = data->beginFrom + (launchWidth * (launch + 1)) - 1;
-		if (end > digit) end = digit;
-
-		// Launch a kernel on the GPU with one thread for each element.
-		bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, currProgDevice, data->exponent, gpu, begin, end, stride);
-
-		// Check for any errors launching the kernel
-		cudaStatus = cudaGetLastError();
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "bbpKernel launch failed on gpu%d: %s\n", gpu, cudaGetErrorString(cudaStatus));
-			goto Error;
-		}
-
-		// cudaDeviceSynchronize waits for the kernel to finish, and returns
-		// any errors encountered during the launch.
-		cudaStatus = cudaDeviceSynchronize();
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu 1!\n", cudaStatus);
-			goto Error;
-		}
-
-		//on every 1000th launch write data to status buffer for progress thread to save
-		if (launch % 1000 == 0 && launch) {
-
-			//copy current results into temp array to reduce and update status
-			cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ), cudaMemcpyDeviceToDevice);
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "cudaMemcpy failed in status update!\n");
-				goto Error;
-			}
-
-			cudaStatus = reduceSJ(dev_ex, size);
-
-			if (cudaStatus != cudaSuccess) {
-				goto Error;
-			}
-
-			// Copy result (reduced into first element) from GPU buffer to host memory.
-			cudaStatus = cudaMemcpy(c, dev_ex, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "cudaMemcpy failed in status update!\n");
-				goto Error;
-			}
-
-			*(data->status) = c[0];
-			*(data->nextStrideBegin) = data->beginFrom + (launchWidth * (launch + 1LLU));
-			std::atomic_fetch_add(data->dataWritten, 1);
-		}
-
-		//give the rest of the computer some gpu time to reduce system choppiness
-		if (primaryGpu) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		}
-	}
-
-	cudaStatus = reduceSJ(dev_c, size);
-
-	if (cudaStatus != cudaSuccess) {
-		goto Error;
-	}
-
-	// Copy result (reduced into first element) from GPU buffer to host memory.
-	cudaStatus = cudaMemcpy(c, dev_c, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaMemcpy failed!\n");
-		goto Error;
-	}
-
-	(*data).output = c[0];
-
-Error:
-	free(c);
-	cudaFree(dev_c);
-	cudaFree(dev_ex);
-
-	(*data).error = cudaStatus;
 }

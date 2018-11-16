@@ -617,3 +617,11 @@ PPROGRESSDATA setupProgress() {
 
 	return threadData;
 }
+
+__device__ void multiplyAdd64Hi(const uint64 & multiplicand, const uint64 & multiplier, uint64 * accumulate) {
+	asm("{\n\t"
+		"mad.hi.u64          %0, %1, %2, %3;\n\t"
+		"}"
+		: "=l"(*accumulate)
+		: "l"(multiplicand), "l"(multiplier), "l"(*accumulate));
+}
