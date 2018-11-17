@@ -704,118 +704,111 @@ int checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * 
 	return 0;
 }
 
-int main()
-{
-	try {
+int main() {
 
-		if (loadProperties()) return 1;
+	if (loadProperties()) return 1;
 
-		cudaGetDeviceCount(&totalGpus);
+	cudaGetDeviceCount(&totalGpus);
 
-		const int arraySize = threadCountPerBlock * blockCount;
-		uint64 hexDigitPosition;
-		std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
-		std::cin >> hexDigitPosition;
-		//subtract 1 to convert to 0-indexed
-		hexDigitPosition--;
+	const int arraySize = threadCountPerBlock * blockCount;
+	uint64 hexDigitPosition;
+	std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
+	std::cin >> hexDigitPosition;
+	//subtract 1 to convert to 0-indexed
+	hexDigitPosition--;
 
-		uint64 sumEnd = 0;
+	uint64 sumEnd = 0;
 
-		//4*hexDigitPosition converts from exponent of 16 to exponent of 2
-		//adding 128 for fixed-point division algorithm
-		//adding 8 for maximum size of coefficient (so that all coefficients can be expressed by subtracting an integer from the exponent)
-		//subtracting 6 for the division by 64 of the whole sum
-		uint64 startingExponent = (4LLU * hexDigitPosition) + 128LLU + 2LLU;
+	//4*hexDigitPosition converts from exponent of 16 to exponent of 2
+	//adding 128 for fixed-point division algorithm
+	//adding 8 for maximum size of coefficient (so that all coefficients can be expressed by subtracting an integer from the exponent)
+	//subtracting 6 for the division by 64 of the whole sum
+	uint64 startingExponent = (4LLU * hexDigitPosition) + 128LLU + 2LLU;
 
-		//the end of the sum does not have the addition by 8 so that all calculations will be a positive exponent of 2 after factoring in the coefficient
-		//this leaves out a couple potentially positive exponents of 2 (could potentially just check subtraction in modExpLeftToRight and keep the addition by 8)
-		sumEnd = (4LLU * hexDigitPosition - 6LLU + 128LLU) / 10LLU;
+	//the end of the sum does not have the addition by 8 so that all calculations will be a positive exponent of 2 after factoring in the coefficient
+	//this leaves out a couple potentially positive exponents of 2 (could potentially just check subtraction in modExpLeftToRight and keep the addition by 8)
+	sumEnd = (4LLU * hexDigitPosition - 6LLU + 128LLU) / 10LLU;
 
-		uint64 beginFrom = 0;
-		sJ cudaResult;
-		double previousTime = 0.0;
-		if (checkForProgressCache(sumEnd, &beginFrom, &cudaResult, &previousTime)) {
+	uint64 beginFrom = 0;
+	sJ cudaResult;
+	double previousTime = 0.0;
+	if (checkForProgressCache(sumEnd, &beginFrom, &cudaResult, &previousTime)) {
+		return 1;
+	}
+
+	std::thread * handles = new std::thread[totalGpus];
+	bbpLauncher * gpuData = new bbpLauncher[totalGpus];
+
+	progressData prog(totalGpus);
+
+	chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
+
+	if (prog.error != cudaSuccess) return 1;
+	prog.begin = &start;
+	prog.maxProgress = sumEnd;
+	prog.previousCache = cudaResult;
+	prog.previousTime = previousTime;
+
+	std::thread progThread(&progressData::progressCheck, &prog);
+
+	for (int i = 0; i < totalGpus; i++) {
+
+		gpuData[i].digit = sumEnd;
+		gpuData[i].gpu = i;
+		gpuData[i].exponent = startingExponent;
+		gpuData[i].totalGpus = totalGpus;
+		gpuData[i].size = arraySize;
+		gpuData[i].deviceProg = prog.deviceProg;
+		gpuData[i].status = &(prog.status[i]);
+		gpuData[i].dataWritten = &(prog.dataWritten);
+		gpuData[i].nextStrideBegin = &(prog.nextStrideBegin[i]);
+		gpuData[i].beginFrom = beginFrom;
+
+		handles[i] = std::thread(&bbpLauncher::launch, gpuData + i);
+	}
+
+	cudaError_t cudaStatus;
+
+	for (int i = 0; i < totalGpus; i++) {
+
+		handles[i].join();
+
+		cudaStatus = gpuData[i].error;
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaBbpLaunch failed on gpu%d!\n", i);
 			return 1;
 		}
 
-		std::thread * handles = new std::thread[totalGpus];
-		bbpLauncher * gpuData = new bbpLauncher[totalGpus];
+		sJ output = gpuData[i].output;
 
-		progressData prog(totalGpus);
-
-		chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
-
-		if (prog.error != cudaSuccess) return 1;
-		prog.begin = &start;
-		prog.maxProgress = sumEnd;
-		prog.previousCache = cudaResult;
-		prog.previousTime = previousTime;
-
-		std::thread progThread(&progressData::progressCheck, &prog);
-
-		for (int i = 0; i < totalGpus; i++) {
-
-			gpuData[i].digit = sumEnd;
-			gpuData[i].gpu = i;
-			gpuData[i].exponent = startingExponent;
-			gpuData[i].totalGpus = totalGpus;
-			gpuData[i].size = arraySize;
-			gpuData[i].deviceProg = prog.deviceProg;
-			gpuData[i].status = &(prog.status[i]);
-			gpuData[i].dataWritten = &(prog.dataWritten);
-			gpuData[i].nextStrideBegin = &(prog.nextStrideBegin[i]);
-			gpuData[i].beginFrom = beginFrom;
-
-			handles[i] = std::thread(&bbpLauncher::launch, gpuData + i);
-		}
-
-		cudaError_t cudaStatus;
-
-		for (int i = 0; i < totalGpus; i++) {
-
-			handles[i].join();
-
-			cudaStatus = gpuData[i].error;
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "cudaBbpLaunch failed on gpu%d!\n", i);
-				return 1;
-			}
-
-			sJ output = gpuData[i].output;
-
-			//sum results from gpus
-			sJAdd(&cudaResult, &output);
-		}
-
-		//tell the progress thread to quit
-		prog.quit = 1;
-
-		progThread.join();
-
-		delete[] handles;
-		delete[] gpuData;
-
-		//uint64 hexDigit = finalizeDigit(cudaResult, hexDigitPosition);
-
-		chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
-
-		printf("pi at hexadecimal digit %llu is %016llX %016llX\n",
-			hexDigitPosition + 1, cudaResult.s[1], cudaResult.s[0]);
-
-		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
-		printf("Computed in %.8f seconds\n", previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
-
-		// cudaDeviceReset must be called before exiting in order for profiling and
-		// tracing tools such as Nsight and Visual Profiler to show complete traces.
-		cudaStatus = cudaDeviceReset();
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaDeviceReset failed!");
-		}
-
-		return 0;
+		//sum results from gpus
+		sJAdd(&cudaResult, &output);
 	}
-	catch(...) {
-		printf("oops xD\n");
-		return 1;
+
+	//tell the progress thread to quit
+	prog.quit = 1;
+
+	progThread.join();
+
+	delete[] handles;
+	delete[] gpuData;
+
+	//uint64 hexDigit = finalizeDigit(cudaResult, hexDigitPosition);
+
+	chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
+
+	printf("pi at hexadecimal digit %llu is %016llX %016llX\n",
+		hexDigitPosition + 1, cudaResult.s[1], cudaResult.s[0]);
+
+	//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
+	printf("Computed in %.8f seconds\n", previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
+
+	// cudaDeviceReset must be called before exiting in order for profiling and
+	// tracing tools such as Nsight and Visual Profiler to show complete traces.
+	cudaStatus = cudaDeviceReset();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceReset failed!");
 	}
+
+	return 0;
 }
