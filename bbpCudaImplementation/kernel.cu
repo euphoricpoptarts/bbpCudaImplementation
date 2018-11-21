@@ -742,7 +742,16 @@ int main() {
 
 	if (loadProperties()) return 1;
 
-	cudaGetDeviceCount(&totalGpus);
+	cudaError_t cudaStatus = cudaGetDeviceCount(&totalGpus);
+
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaGetDeviceCount failed!\n");
+		return 1;
+	}
+	if (!totalGpus) {
+		fprintf(stderr, "No GPUs detected in system!\n");
+		return 1;
+	}
 
 	const int arraySize = threadCountPerBlock * blockCount;
 	uint64 hexDigitPosition;
@@ -770,8 +779,6 @@ int main() {
 
 		handles[i] = std::thread(&bbpLauncher::launch, gpuData + i);
 	}
-
-	cudaError_t cudaStatus;
 
 	sJ cudaResult = prog.previousCache;
 
