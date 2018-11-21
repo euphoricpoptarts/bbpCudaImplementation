@@ -48,6 +48,28 @@ __device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
 	if (addend->s[0] < augend->s[0]) addend->s[1]++;
 }
 
+class digitData {
+public:
+	uint64 sumEnd = 0;
+	uint64 startingExponent = 0;
+	uint64 beginFrom = 0;
+
+	digitData(uint64 digitInput) {
+		//subtract 1 to convert to 0-indexed
+		digitInput--;
+
+		//4*hexDigitPosition converts from exponent of 16 to exponent of 2
+		//adding 128 for fixed-point division algorithm
+		//adding 8 for maximum size of coefficient (so that all coefficients can be expressed by subtracting an integer from the exponent)
+		//subtracting 6 for the division by 64 of the whole sum
+		this->startingExponent = (4LLU * digitInput) + 128LLU + 2LLU;
+
+		//the end of the sum does not have the addition by 8 so that all calculations will be a positive exponent of 2 after factoring in the coefficient
+		//this leaves out a couple potentially positive exponents of 2 (could potentially just check subtraction in modExpLeftToRight and keep the addition by 8)
+		this->sumEnd = (4LLU * digitInput - 6LLU + 128LLU) / 10LLU;
+	}
+};
+
 class progressData {
 public:
 	volatile uint64 * currentProgress;
@@ -103,6 +125,71 @@ public:
 		delete[] this->status;
 		delete[] this->nextStrideBegin;
 		//TODO: delete the device/host pointers?
+	}
+
+	int checkForProgressCache(digitData * data) {
+		this->maxProgress = data->sumEnd;
+		std::string target = "digit" + std::to_string(data->sumEnd) + "Base";
+		std::string pToFile;
+		std::vector<std::string> matching;
+		int found = 0;
+		for (auto& element : std::experimental::filesystem::directory_iterator("progressCache")) {
+			std::string name = element.path().filename().string();
+			//filename begins with desired string
+			if (name.compare(0, target.length(), target) == 0) {
+				matching.push_back(element.path().string());
+				found = 1;
+			}
+		}
+		if (found) {
+			//sort and choose alphabetically last result
+			std::sort(matching.begin(), matching.end());
+			pToFile = matching.back();
+
+			int chosen = 0;
+			while (!chosen) {
+				chosen = 1;
+				std::cout << "A cache of a previous computation for this digit exists." << std::endl;
+				std::cout << "Would you like to reload the most recent cache (" << pToFile << ")? y\\n" << std::endl;
+				char choice;
+				std::cin >> choice;
+				if (choice == 'y') {
+					std::cout << "Loading cache and continuing computation." << std::endl;
+					FILE * cacheF = fopen(pToFile.c_str(), "r");
+
+					if (cacheF == NULL) {
+						std::cout << "Could not open " << pToFile << "!" << std::endl;
+						return 1;
+					}
+
+					int readLines = 0;
+
+					readLines += fscanf(cacheF, "%llu", &data->beginFrom);
+					readLines += fscanf(cacheF, "%la", &this->previousTime);
+					for (int i = 0; i < 2; i++) readLines += fscanf(cacheF, "%llX", &this->previousCache.s[i]);
+					fclose(cacheF);
+					//9 lines of data should have been read, 1 continuation point, 1 time, and 7 data points
+					if (readLines != 4) {
+						std::cout << "Data reading failed!" << std::endl;
+						return 1;
+					}
+				}
+				else if (choice == 'n') {
+					std::cout << "Beginning computation without reloading." << std::endl;
+				}
+				else {
+					std::cout << "Invalid input" << std::endl;
+					// Ignore to the end of line
+					std::cin.clear();
+					std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+					chosen = 0;
+				}
+			}
+		}
+		else {
+			std::cout << "No progress cache file found. Beginning computation without reloading." << std::endl;
+		}
+		return 0;
 	}
 
 	//this function is meant to be run by an independent thread to output progress to the console
@@ -189,27 +276,27 @@ public:
 
 class bbpLauncher {
 public:
+	static int totalLaunchers;
 	sJ output;
-	uint64 digit;
-	uint64 exponent;
-	uint64 beginFrom;
 	int gpu = 0;
 	int totalGpus = 0;
 	int size = 0;
 	cudaError_t error;
-	volatile uint64 *deviceProg;
-	sJ * status;
-	volatile uint64 * nextStrideBegin;
-	volatile std::atomic<int> * dataWritten;
+	digitData * data;
+	progressData * prog;
+
+	bbpLauncher() {
+		this->gpu = totalLaunchers++;
+	}
+
+	void initialize(digitData * data, progressData * prog) {
+		this->data = data;
+		this->prog = prog;
+	}
 
 	// Helper function for using CUDA
 	void launch()//cudaError_t addWithCuda(sJ *output, unsigned int size, TYPE digit)
 	{
-		int size = this->size;
-		int gpu = this->gpu;
-		int totalGpus = this->totalGpus;
-		uint64 digit = this->digit;
-		volatile uint64 * currProgDevice = this->deviceProg;
 		sJ *dev_c = 0;
 		sJ* c = new sJ[1];
 		sJ *dev_ex = 0;
@@ -226,36 +313,36 @@ public:
 		}
 
 		// Allocate GPU buffer for temp vector
-		cudaStatus = cudaMalloc((void**)&dev_ex, size * sizeof(sJ));
+		cudaStatus = cudaMalloc((void**)&dev_ex, this->size * sizeof(sJ));
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMalloc failed!");
 			goto Error;
 		}
 
 		// Allocate GPU buffer for output vector
-		cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(sJ));
+		cudaStatus = cudaMalloc((void**)&dev_c, this->size * sizeof(sJ));
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMalloc failed!");
 			goto Error;
 		}
 
-		stride = (uint64)size * (uint64)totalGpus;
+		stride = (uint64)this->size * (uint64)this->totalGpus;
 
 		launchWidth = stride * strideMultiplier;
 
 		//need to round up
 		//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
 		//even when digit/launchWidth is an integer, it is necessary to add 1
-		neededLaunches = ((digit - this->beginFrom) / launchWidth) + 1LLU;
+		neededLaunches = ((this->data->sumEnd - this->data->beginFrom) / launchWidth) + 1LLU;
 
 		for (uint64 launch = 0; launch < neededLaunches; launch++) {
 
-			uint64 begin = this->beginFrom + (launchWidth * launch);
-			uint64 end = this->beginFrom + (launchWidth * (launch + 1)) - 1;
-			if (end > digit) end = digit;
+			uint64 begin = this->data->beginFrom + (launchWidth * launch);
+			uint64 end = this->data->beginFrom + (launchWidth * (launch + 1)) - 1;
+			if (end > this->data->sumEnd) end = this->data->sumEnd;
 
 			// Launch a kernel on the GPU with one thread for each element.
-			bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, currProgDevice, this->exponent, gpu, begin, end, stride);
+			bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, this->gpu, begin, end, stride);
 
 			// Check for any errors launching the kernel
 			cudaStatus = cudaGetLastError();
@@ -295,9 +382,9 @@ public:
 					goto Error;
 				}
 
-				*(this->status) = c[0];
-				*(this->nextStrideBegin) = this->beginFrom + (launchWidth * (launch + 1LLU));
-				std::atomic_fetch_add(this->dataWritten, 1);
+				this->prog->status[this->gpu] = c[0];
+				this->prog->nextStrideBegin[this->gpu] = this->data->beginFrom + (launchWidth * (launch + 1LLU));
+				std::atomic_fetch_add(&this->prog->dataWritten, 1);
 			}
 
 			//give the rest of the computer some gpu time to reduce system choppiness
@@ -329,6 +416,8 @@ public:
 		this->error = cudaStatus;
 	}
 };
+
+int bbpLauncher::totalLaunchers = 0;
 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of squaring a 64 bit number
 __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
@@ -400,6 +489,15 @@ __device__ void add128Bit(uint64 & addendHi, uint64 & addendLo, uint64 augendHi,
 	asm("{\n\t"
 		"add.cc.u64         %1, %3, %5;\n\t"
 		"addc.u64           %0, %2, %4;\n\t"
+		"}"
+		: "=l"(addendHi), "=l"(addendLo)
+		: "l"(addendHi), "l"(addendLo), "l"(augendHi), "l"(augendLo));
+}
+
+__device__ void sub128Bit(uint64 & addendHi, uint64 & addendLo, uint64 augendHi, uint64 augendLo) {
+	asm("{\n\t"
+		"sub.cc.u64         %1, %3, %5;\n\t"
+		"subc.u64           %0, %2, %4;\n\t"
 		"}"
 		: "=l"(addendHi), "=l"(addendLo)
 		: "l"(addendHi), "l"(addendLo), "l"(augendHi), "l"(augendLo));
@@ -640,70 +738,6 @@ int loadProperties() {
 	return 0;
 }
 
-int checkForProgressCache(uint64 digit, uint64 * contFrom, sJ * cache, double * previousTime) {
-	std::string target = "digit" + std::to_string(digit) + "Base";
-	std::string pToFile;
-	std::vector<std::string> matching;
-	int found = 0;
-	for (auto& element : std::experimental::filesystem::directory_iterator("progressCache")) {
-		std::string name = element.path().filename().string();
-		//filename begins with desired string
-		if (name.compare(0, target.length(), target) == 0) {
-			matching.push_back(element.path().string());
-			found = 1;
-		}
-	}
-	if (found) {
-		//sort and choose alphabetically last result
-		std::sort(matching.begin(), matching.end());
-		pToFile = matching.back();
-
-		int chosen = 0;
-		while (!chosen) {
-			chosen = 1;
-			std::cout << "A cache of a previous computation for this digit exists." << std::endl;
-			std::cout << "Would you like to reload the most recent cache (" << pToFile << ")? y\\n" << std::endl;
-			char choice;
-			std::cin >> choice;
-			if (choice == 'y') {
-				std::cout << "Loading cache and continuing computation." << std::endl;
-				FILE * cacheF = fopen(pToFile.c_str(), "r");
-
-				if (cacheF == NULL) {
-					std::cout << "Could not open " << pToFile << "!" << std::endl;
-					return 1;
-				}
-
-				int readLines = 0;
-
-				readLines += fscanf(cacheF, "%llu", contFrom);
-				readLines += fscanf(cacheF, "%la", previousTime);
-				for (int i = 0; i < 2; i++) readLines += fscanf(cacheF, "%llX", &cache->s[i]);
-				fclose(cacheF);
-				//9 lines of data should have been read, 1 continuation point, 1 time, and 7 data points
-				if (readLines != 4) {
-					std::cout << "Data reading failed!" << std::endl;
-					return 1;
-				}
-			}
-			else if (choice == 'n') {
-				std::cout << "Beginning computation without reloading." << std::endl;
-			}
-			else {
-				std::cout << "Invalid input" << std::endl;
-				// Ignore to the end of line
-				std::cin.clear();
-				std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-				chosen = 0;
-			}
-		}
-	}
-	else {
-		std::cout << "No progress cache file found. Beginning computation without reloading." << std::endl;
-	}
-	return 0;
-}
-
 int main() {
 
 	if (loadProperties()) return 1;
@@ -714,60 +748,32 @@ int main() {
 	uint64 hexDigitPosition;
 	std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
 	std::cin >> hexDigitPosition;
-	//subtract 1 to convert to 0-indexed
-	hexDigitPosition--;
 
-	uint64 sumEnd = 0;
-
-	//4*hexDigitPosition converts from exponent of 16 to exponent of 2
-	//adding 128 for fixed-point division algorithm
-	//adding 8 for maximum size of coefficient (so that all coefficients can be expressed by subtracting an integer from the exponent)
-	//subtracting 6 for the division by 64 of the whole sum
-	uint64 startingExponent = (4LLU * hexDigitPosition) + 128LLU + 2LLU;
-
-	//the end of the sum does not have the addition by 8 so that all calculations will be a positive exponent of 2 after factoring in the coefficient
-	//this leaves out a couple potentially positive exponents of 2 (could potentially just check subtraction in modExpLeftToRight and keep the addition by 8)
-	sumEnd = (4LLU * hexDigitPosition - 6LLU + 128LLU) / 10LLU;
-
-	uint64 beginFrom = 0;
-	sJ cudaResult;
-	double previousTime = 0.0;
-	if (checkForProgressCache(sumEnd, &beginFrom, &cudaResult, &previousTime)) {
-		return 1;
-	}
+	digitData data(hexDigitPosition);
 
 	std::thread * handles = new std::thread[totalGpus];
 	bbpLauncher * gpuData = new bbpLauncher[totalGpus];
 
 	progressData prog(totalGpus);
+	if (prog.error != cudaSuccess) return 1;
+	if (prog.checkForProgressCache(&data)) return 1;
 
 	chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
-
-	if (prog.error != cudaSuccess) return 1;
 	prog.begin = &start;
-	prog.maxProgress = sumEnd;
-	prog.previousCache = cudaResult;
-	prog.previousTime = previousTime;
 
 	std::thread progThread(&progressData::progressCheck, &prog);
 
 	for (int i = 0; i < totalGpus; i++) {
-
-		gpuData[i].digit = sumEnd;
-		gpuData[i].gpu = i;
-		gpuData[i].exponent = startingExponent;
 		gpuData[i].totalGpus = totalGpus;
 		gpuData[i].size = arraySize;
-		gpuData[i].deviceProg = prog.deviceProg;
-		gpuData[i].status = &(prog.status[i]);
-		gpuData[i].dataWritten = &(prog.dataWritten);
-		gpuData[i].nextStrideBegin = &(prog.nextStrideBegin[i]);
-		gpuData[i].beginFrom = beginFrom;
+		gpuData[i].initialize(&data, &prog);
 
 		handles[i] = std::thread(&bbpLauncher::launch, gpuData + i);
 	}
 
 	cudaError_t cudaStatus;
+
+	sJ cudaResult = prog.previousCache;
 
 	for (int i = 0; i < totalGpus; i++) {
 
@@ -798,10 +804,10 @@ int main() {
 	chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
 
 	printf("pi at hexadecimal digit %llu is %016llX %016llX\n",
-		hexDigitPosition + 1, cudaResult.s[1], cudaResult.s[0]);
+		hexDigitPosition, cudaResult.s[1], cudaResult.s[0]);
 
 	//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
-	printf("Computed in %.8f seconds\n", previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
+	printf("Computed in %.8f seconds\n", prog.previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
 
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Nsight and Visual Profiler to show complete traces.
