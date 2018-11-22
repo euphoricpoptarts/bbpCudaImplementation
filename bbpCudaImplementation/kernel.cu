@@ -33,6 +33,11 @@ int blockCount;
 __device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
 __device__ int printOnce = 0;
 int primaryGpu;
+int benchmarkBlockCounts;
+int numRuns;
+uint64 benchmarkTarget;
+int startBlocks;
+int endBlocks;
 
 struct sJ {
 	uint64 s[2] = { 0, 0};
@@ -731,9 +736,45 @@ int loadProperties() {
 	readLines += fscanf(propF, "%llu", &strideMultiplier);
 	readLines += fscanf(propF, "%d", &blockCount);
 	readLines += fscanf(propF, "%d", &primaryGpu);
-	if (readLines != 3) {
+	readLines += fscanf(propF, "%d", &benchmarkBlockCounts);
+	readLines += fscanf(propF, "%d", &numRuns);
+	readLines += fscanf(propF, "%llu", &benchmarkTarget);
+	readLines += fscanf(propF, "%d", &startBlocks);
+	readLines += fscanf(propF, "%d", &endBlocks);
+	if (readLines != 8) {
 		std::cout << "Properties loading failed!" << std::endl;
 		return 1;
+	}
+	return 0;
+}
+
+int benchmark() {
+	digitData data(benchmarkTarget);
+	totalGpus = 1;
+	progressData prog(totalGpus);
+	if (prog.error != cudaSuccess) return 1;
+	bbpLauncher gpuData;
+	gpuData.totalGpus = totalGpus;
+	gpuData.initialize(&data, &prog);
+	std::vector<std::pair<double, int>> timings;
+	for (int i = startBlocks; i <= endBlocks; i++) {
+		double total = 0.0;
+		for (int j = 0; j < numRuns; j++) {
+			chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
+			gpuData.size = threadCountPerBlock * blockCount;
+			gpuData.launch();
+			chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
+			total += chr::duration_cast<chr::duration<double>>(end - start).count();
+		}
+		double avg = total / (double)numRuns;
+		std::cout << "Average for " << i << " blocks is " << avg << " seconds." << std::endl;
+		std::pair<double, int> timingPair(avg, i);
+		timings.push_back(timingPair);
+	}
+	std::sort(timings.begin(), timings.end());
+	std::cout << "Fastest block counts:" << std::endl;
+	for (int i = 0; i < 10; i++) {
+		std::cout << timings.at(i).second << " blocks at " << timings.at(i).first << " seconds." << std::endl;
 	}
 	return 0;
 }
@@ -751,6 +792,10 @@ int main() {
 	if (!totalGpus) {
 		fprintf(stderr, "No GPUs detected in system!\n");
 		return 1;
+	}
+
+	if (benchmarkBlockCounts) {
+		return benchmark();
 	}
 
 	const int arraySize = threadCountPerBlock * blockCount;
