@@ -26,12 +26,12 @@ namespace chr = std::chrono;
 std::string propertiesFile = "application.properties";
 int totalGpus;
 uint64 strideMultiplier;
-//warpsize is 32 so optimal value is probably always a multiple of 32
+//warpsize is 32 so optimal value is almost certainly a multiple of 32
 const int threadCountPerBlock = 128;
-//this is more difficult to optimize but seems to not like odd numbers
+//blockCount is trickier, and is probably a multiple of the number of streaming multiprocessors in a given gpu
 int blockCount;
-__device__  __constant__ const uint64 int64MaxBit = 0x8000000000000000;
-__device__ int printOnce = 0;
+__device__  __constant__ const uint64 twoTo63Power = 0x8000000000000000;
+//__device__ int printOnce = 0;
 int primaryGpu;
 int benchmarkBlockCounts;
 int numRuns;
@@ -352,7 +352,7 @@ public:
 			// Check for any errors launching the kernel
 			cudaStatus = cudaGetLastError();
 			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "bbpKernel launch failed on gpu%d: %s\n", gpu, cudaGetErrorString(cudaStatus));
+				fprintf(stderr, "bbpKernel launch failed on gpu%d: %s\n", this->gpu, cudaGetErrorString(cudaStatus));
 				goto Error;
 			}
 
@@ -360,7 +360,7 @@ public:
 			// any errors encountered during the launch.
 			cudaStatus = cudaDeviceSynchronize();
 			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu 1!\n", cudaStatus);
+				fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu %d!\n", cudaStatus, this->gpu);
 				goto Error;
 			}
 
@@ -490,6 +490,44 @@ __device__ void montgomeryAddAndShift32Bit(uint64 & hi, uint64 & lo, const uint6
 		: "l"(lo), "l"(hi), "l"(mod), "r"(mprime));
 }
 
+__device__ void fullMontgomerySquarePTX(uint64 & io, const uint64 & mod, const uint32 & mprime) {
+	asm("{\n\t"
+		".reg .u32          t0and3, t1, t2, i0, i1, z0, m0, m1, s1, s2;\n\t"
+		".reg .u64          s0;\n\t"
+		"mov.b64           {m0, m1}, %2;\n\t" //splits mod into 32 bit words
+		"mov.b64           {i0, i1}, %1;\n\t" //splits input into 32 bit words
+		"mul.wide.u32       s0, i0,  i0;\n\t" //input_lo ^ 2
+		"mov.b64          {t0and3, t1}, s0;\n\t"
+		"mul.lo.u32         z0, %3, t0and3;\n\t" //z0 =  lo(mprime*input_lo)
+		"mad.lo.cc.u32      t0and3, z0, m0, t0and3;\n\t" //t0 = lolo + lo(t0 * z0), may be removable
+		"madc.hi.cc.u32     t1, z0, m0, t1;\n\t"
+		"addc.u32           t2,  0, 0;\n\t"
+		"mad.lo.cc.u32      t1, z0, m1, t1;\n\t"
+		"madc.hi.u32        t2, z0, m1, t2;\n\t" //t2 is at most 1 here, and z0*m1 can not be 2^32 - 1, so no chance for overflow
+		//"addc.u32           t3,  0, t3;\n\t"
+		"mul.wide.u32       s0, i0, i1;\n\t"
+		"add.cc.u64         s0, s0, s0;\n\t"
+		"addc.u32           t0and3, 0, 0;\n\t"
+		"mov.b64          {s1, s2}, s0;\n\t"
+		"add.cc.u32         t1, t1, s1;\n\t"
+		"addc.cc.u32        t2, t2, s2;\n\t"
+		"addc.u32           t0and3, t0and3, 0;\n\t"
+		"mul.lo.u32         z0, %3, t1;\n\t" //z0 =  lo(mprime*t1)
+		"mad.lo.cc.u32      t1, z0, m0, t1;\n\t"
+		"madc.hi.cc.u32     t2, z0, m0, t2;\n\t"
+		"addc.u32           t0and3,  0, t0and3;\n\t"
+		"mad.lo.cc.u32      t2, z0, m1, t2;\n\t" //t0 = lolo + lo(t0 * z0)
+		"madc.hi.u32        t0and3, z0, m1, t0and3;\n\t"
+		"mul.wide.u32       s0, i1, i1;\n\t"
+		"mov.b64          {s1, s2}, s0;\n\t"
+		"add.cc.u32         t2, t2, s1;\n\t"
+		"addc.u32           t0and3, t0and3, s2;\n\t"
+		"mov.b64            %0, {t2, t0and3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		"}"
+		: "=l"(io)
+		: "l"(io), "l"(mod), "r"(mprime));
+}
+
 __device__ void add128Bit(uint64 & addendHi, uint64 & addendLo, uint64 augendHi, uint64 augendLo) {
 	asm("{\n\t"
 		"add.cc.u64         %1, %3, %5;\n\t"
@@ -513,7 +551,8 @@ __device__ void sub128Bit(uint64 & addendHi, uint64 & addendLo, uint64 augendHi,
 //an explanation of the approach: http://marc-b-reynolds.github.io/math/2017/09/18/ModInverse.html
 //saves from 15-25% of the total computation time over xbinGCD method (on the lower side of that for larger digit computations)
 __device__ void modInverseNewtonsMethod(uint64 n, uint64 & output) {
-	output = (n * 3LLU) ^ 2LLU;
+	//n * 3 xor 2
+	output = ((n << 1) + n) ^ 2LLU;
 
 	for (int i = 0; i < 4; i++) {
 		output = output * (2 - (n * output));
@@ -523,31 +562,32 @@ __device__ void modInverseNewtonsMethod(uint64 n, uint64 & output) {
 	output = -output;
 }
 
-//montgomery multiplication routine identical to above except for only being used when abar and bbar are known in advance to be the same
-//uses a faster multiplication routine for squaring than is possible while not squaring
-__device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 & output) {
+////montgomery multiplication routine identical to above except for only being used when abar and bbar are known in advance to be the same
+////uses a faster multiplication routine for squaring than is possible while not squaring
+//__device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 & output) {
+//
+//	uint64 tlo = 0;// , tm = 0;
+//
+//	square64By64(abar, &tlo, &output);
+//	/*output += !!tlo;
+//	multiply64By64LoOnly(tlo, mprime, &tm);
+//	multiply64By64PlusHi(tm, mod, &output);*/
+//
+//
+//	montgomeryAddAndShift32Bit(output, tlo, mod, mprime);
+//
+//	subtractModIfMoreThanMod(output, mod);
+//}
 
-	uint64 tlo = 0;// , tm = 0;
-
-	square64By64(abar, &tlo, &output);
-	/*output += !!tlo;
-	multiply64By64LoOnly(tlo, mprime, &tm);
-	multiply64By64PlusHi(tm, mod, &output);*/
-
-
-	montgomeryAddAndShift32Bit(output, tlo, mod, mprime);
-
-	subtractModIfMoreThanMod(output, mod);
-}
-
-__device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result) {
+__device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result, int negative) {
 	if (!r) return;
 
 	uint64 q0 = (-r)*mPrime;
 	uint64 q1 = -(1LLU) - __umul64hi(mod, q0);
 	q1 *= mPrime;
 
-	add128Bit(result[1], result[0], q1, q0);
+	if(!negative) add128Bit(result[1], result[0], q1, q0);
+	else sub128Bit(result[1], result[0], q1, q0);
 }
 
 __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result, int shift, int negative) {
@@ -604,7 +644,7 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 	exp -= 64;
 
 	//find 2 in montgomery space
-	output = int64MaxBit % mod;
+	output = twoTo63Power % mod;
 	output <<= 1;
 	subtractModIfMoreThanMod(output, mod);
 	output <<= 1;
@@ -618,7 +658,8 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 	while (expMask) {
 
-		montgomerySquare(output, mod, mPrime32, output);
+		//montgomerySquare(output, mod, mPrime32, output);
+		fullMontgomerySquarePTX(output, mod, mPrime32);
 
 		if (exp & expMask) {
 			output <<= 1;
@@ -633,8 +674,7 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 		fixedPointDivisionExactWithShift(mod, output, -mPrime, result, shift, negative);
 	}
 	else {
-		if (negative) output = mod - output;
-		fixedPointDivisionExact(mod, output, -mPrime, result);
+		fixedPointDivisionExact(mod, output, -mPrime, result, negative);
 	}
 }
 
