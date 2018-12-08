@@ -429,7 +429,7 @@ __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
 
 	asm("{\n\t"
 		".reg .u64          m0, m1, m2;\n\t"
-		".reg .u32          t0, t1, t2, t3, v0, v1, c0;\n\t"
+		".reg .u32          t0, t1, t2, t3, v0, v1;\n\t"
 		"mov.b64           {v0, v1}, %2;\n\t" //splits a into hi and lo 32 bit words
 		"mul.wide.u32       m0, v0, v0;    \n\t" //m0 = alo*alo
 		"mul.wide.u32       m1, v0, v1;    \n\t" //m1 = alo*ahi
@@ -437,11 +437,11 @@ __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
 		"mov.b64           {t0, t1}, m0;\n\t"
 		"mov.b64           {t2, t3}, m2;\n\t"
 		"add.cc.u64         m1, m1, m1;\n\t" //because (ahi + alo)^2 = ahi^2 + 2*alo*ahi + alo^2, we must double m1
-		"addc.u32           c0,  0,  0;\n\t" //preserve carryout
+		"addc.u32           t3,  t3,  0;\n\t"
 		"mov.b64           {v0, v1}, m1;\n\t"
 		"add.cc.u32         t1, t1, v0;\n\t"
 		"addc.cc.u32        t2, t2, v1;\n\t"
-		"addc.u32           t3, t3, c0;\n\t"
+		"addc.u32           t3, t3, 0;\n\t"
 		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
 		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
 		"}"
@@ -490,44 +490,6 @@ __device__ void montgomeryAddAndShift32Bit(uint64 & hi, uint64 & lo, const uint6
 		: "l"(lo), "l"(hi), "l"(mod), "r"(mprime));
 }
 
-__device__ void fullMontgomerySquarePTX(uint64 & io, const uint64 & mod, const uint32 & mprime) {
-	asm("{\n\t"
-		".reg .u32          t0and3, t1, t2, i0, i1, z0, m0, m1, s1, s2;\n\t"
-		".reg .u64          s0;\n\t"
-		"mov.b64           {m0, m1}, %2;\n\t" //splits mod into 32 bit words
-		"mov.b64           {i0, i1}, %1;\n\t" //splits input into 32 bit words
-		"mul.wide.u32       s0, i0,  i0;\n\t" //input_lo ^ 2
-		"mov.b64          {t0and3, t1}, s0;\n\t"
-		"mul.lo.u32         z0, %3, t0and3;\n\t" //z0 =  lo(mprime*input_lo)
-		"mad.lo.cc.u32      t0and3, z0, m0, t0and3;\n\t" //t0 = lolo + lo(t0 * z0), may be removable
-		"madc.hi.cc.u32     t1, z0, m0, t1;\n\t"
-		"addc.u32           t2,  0, 0;\n\t"
-		"mad.lo.cc.u32      t1, z0, m1, t1;\n\t"
-		"madc.hi.u32        t2, z0, m1, t2;\n\t" //t2 is at most 1 here, and z0*m1 can not be 2^32 - 1, so no chance for overflow
-		//"addc.u32           t3,  0, t3;\n\t"
-		"mul.wide.u32       s0, i0, i1;\n\t"
-		"add.cc.u64         s0, s0, s0;\n\t"
-		"addc.u32           t0and3, 0, 0;\n\t"
-		"mov.b64          {s1, s2}, s0;\n\t"
-		"add.cc.u32         t1, t1, s1;\n\t"
-		"addc.cc.u32        t2, t2, s2;\n\t"
-		"addc.u32           t0and3, t0and3, 0;\n\t"
-		"mul.lo.u32         z0, %3, t1;\n\t" //z0 =  lo(mprime*t1)
-		"mad.lo.cc.u32      t1, z0, m0, t1;\n\t"
-		"madc.hi.cc.u32     t2, z0, m0, t2;\n\t"
-		"addc.u32           t0and3,  0, t0and3;\n\t"
-		"mad.lo.cc.u32      t2, z0, m1, t2;\n\t" //t0 = lolo + lo(t0 * z0)
-		"madc.hi.u32        t0and3, z0, m1, t0and3;\n\t"
-		"mul.wide.u32       s0, i1, i1;\n\t"
-		"mov.b64          {s1, s2}, s0;\n\t"
-		"add.cc.u32         t2, t2, s1;\n\t"
-		"addc.u32           t0and3, t0and3, s2;\n\t"
-		"mov.b64            %0, {t2, t0and3};\n\t" //concatenates t2 and t3 into 1 64 bit word
-		"}"
-		: "=l"(io)
-		: "l"(io), "l"(mod), "r"(mprime));
-}
-
 __device__ void add128Bit(uint64 & addendHi, uint64 & addendLo, uint64 augendHi, uint64 augendLo) {
 	asm("{\n\t"
 		"add.cc.u64         %1, %3, %5;\n\t"
@@ -554,6 +516,7 @@ __device__ void modInverseNewtonsMethod(uint64 n, uint64 & output) {
 	//n * 3 xor 2
 	output = ((n << 1) + n) ^ 2LLU;
 
+#pragma unroll
 	for (int i = 0; i < 4; i++) {
 		output = output * (2 - (n * output));
 	}
@@ -562,22 +525,23 @@ __device__ void modInverseNewtonsMethod(uint64 n, uint64 & output) {
 	output = -output;
 }
 
-////montgomery multiplication routine identical to above except for only being used when abar and bbar are known in advance to be the same
-////uses a faster multiplication routine for squaring than is possible while not squaring
-//__device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 & output) {
-//
-//	uint64 tlo = 0;// , tm = 0;
-//
-//	square64By64(abar, &tlo, &output);
-//	/*output += !!tlo;
-//	multiply64By64LoOnly(tlo, mprime, &tm);
-//	multiply64By64PlusHi(tm, mod, &output);*/
-//
-//
-//	montgomeryAddAndShift32Bit(output, tlo, mod, mprime);
-//
-//	subtractModIfMoreThanMod(output, mod);
-//}
+//montgomery multiplication routine identical to above except for only being used when abar and bbar are known in advance to be the same
+//uses a faster multiplication routine for squaring than is possible while not squaring
+__device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 & output) {
+
+	uint64 tlo = 0;// , tm = 0;
+
+	square64By64(abar, &tlo, &output);
+	/*output += !!tlo;
+	multiply64By64LoOnly(tlo, mprime, &tm);
+	multiply64By64PlusHi(tm, mod, &output);*/
+
+	montgomeryAddAndShift32Bit(output, tlo, mod, mprime);
+
+	//can be removed if mod < 2^62
+	//see this paper: https://pdfs.semanticscholar.org/0e6a/3e8f30b63b556679f5dff2cbfdfe9523f4fa.pdf
+	//subtractModIfMoreThanMod(output, mod);
+}
 
 __device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result, int negative) {
 	if (!r) return;
@@ -622,8 +586,8 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 //montgomery multiplication suggested by njuffa
 //adds the 128 bit number representing ((2^exp)%mod)/mod to result
 __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract, uint64 expMask) {
-
 	uint64 output = 1;
+	//uint64 doubleMod = mod << 1;
 	uint64 mPrime;
 
 	modInverseNewtonsMethod(mod, mPrime);
@@ -658,17 +622,23 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 	while (expMask) {
 
-		//montgomerySquare(output, mod, mPrime32, output);
-		fullMontgomerySquarePTX(output, mod, mPrime32);
+		montgomerySquare(output, mod, mPrime32, output);
+		//fullMontgomerySquarePTX2(output, mod, mPrime32);
 
 		if (exp & expMask) {
 			output <<= 1;
-			subtractModIfMoreThanMod(output, mod);
+
+			//can be removed if mod < 2^60
+			//subtractModIfMoreThanMod(output, doubleMod);
 		}
 
 		//load next bit
 		expMask >>= 1;
 	}
+
+	//remove these if you don't mind a slight decrease in precision
+	//subtractModIfMoreThanMod(output, doubleMod);
+	//subtractModIfMoreThanMod(output, mod);
 
 	if (shift) {
 		fixedPointDivisionExactWithShift(mod, output, -mPrime, result, shift, negative);

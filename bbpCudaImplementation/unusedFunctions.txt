@@ -625,3 +625,70 @@ __device__ void multiplyAdd64Hi(const uint64 & multiplicand, const uint64 & mult
 		: "=l"(*accumulate)
 		: "l"(multiplicand), "l"(multiplier), "l"(*accumulate));
 }
+
+__device__ void fullMontgomerySquarePTX(uint64 & io, const uint64 & mod, const uint32 & mprime) {
+	asm("{\n\t"
+		".reg .u32          t0and3, t1, t2, i0, i1, z0, m0, m1, s1, s2;\n\t"
+		".reg .u64          s0;\n\t"
+		"mov.b64           {m0, m1}, %2;\n\t" //splits mod into 32 bit words
+		"mov.b64           {i0, i1}, %1;\n\t" //splits input into 32 bit words
+		"mul.wide.u32       s0, i0,  i0;\n\t" //input_lo ^ 2
+		"mov.b64           {t0and3, t1}, s0;\n\t"
+		"mul.lo.u32         z0, %3, t0and3;\n\t" //z0 =  lo(mprime*input_lo)
+		"mad.lo.cc.u32      t0and3, z0, m0, t0and3;\n\t" //t0 = lolo + lo(t0 * z0), may be removable
+		"madc.hi.cc.u32     t1, z0, m0, t1;\n\t"
+		"addc.u32           t2,  0, 0;\n\t"
+		"mad.lo.cc.u32      t1, z0, m1, t1;\n\t"
+		"madc.hi.u32        t2, z0, m1, t2;\n\t" //t2 is at most 1 here, and z0*m1 can not be 2^32 - 1, so no chance for overflow
+		//"addc.u32           t3,  0, t3;\n\t"
+		"mul.wide.u32       s0, i0, i1;\n\t"
+		"add.cc.u64         s0, s0, s0;\n\t"
+		"addc.u32           t0and3, 0, 0;\n\t"
+		"mov.b64          {s1, s2}, s0;\n\t"
+		"add.cc.u32         t1, t1, s1;\n\t"
+		"addc.cc.u32        t2, t2, s2;\n\t"
+		"addc.u32           t0and3, t0and3, 0;\n\t"
+		"mul.lo.u32         z0, %3, t1;\n\t" //z0 =  lo(mprime*t1)
+		"mad.lo.cc.u32      t1, z0, m0, t1;\n\t"
+		"madc.hi.cc.u32     t2, z0, m0, t2;\n\t"
+		"addc.u32           t0and3,  0, t0and3;\n\t"
+		"mad.lo.cc.u32      t2, z0, m1, t2;\n\t" //t0 = lolo + lo(t0 * z0)
+		"madc.hi.u32        t0and3, z0, m1, t0and3;\n\t"
+		"mul.wide.u32       s0, i1, i1;\n\t"
+		"mov.b64          {s1, s2}, s0;\n\t"
+		"add.cc.u32         t2, t2, s1;\n\t"
+		"addc.u32           t0and3, t0and3, s2;\n\t"
+		"mov.b64            %0, {t2, t0and3};\n\t" //concatenates t2 and t3 into 1 64 bit word
+		"}"
+		: "=l"(io)
+		: "l"(io), "l"(mod), "r"(mprime));
+}
+
+//Work-in-progress
+//__device__ void fullMontgomerySquarePTX2(uint64 & io, const uint64 & mod, const uint64 & mprime) {
+//	asm("{\n\t"
+//		".reg .u32          t3, t1, t2, i0, i1, z0, z1, m0, m1;\n\t"
+//		".reg .u64          s0, s3;\n\t"
+//		"mov.b64           {m0, m1}, %2;\n\t" //splits mod into 32 bit words
+//		"mov.b64           {i0, i1}, %1;\n\t" //splits input into 32 bit words
+//		"mul.wide.u32       s0, i0,  i0;\n\t" //input_lo ^ 2
+//		"mul.lo.u64         s0, s0, %3;\n\t"
+//		"mad.hi.u64         s0, s0, %2, 1;\n\t"
+//		"mul.wide.u32       s3, i0, i1;\n\t"
+//		"add.cc.u64         s3, s3, s3;\n\t"
+//		"addc.u64           s0, s0,  0;\n\t"
+//		"mov.b64           {t2, t3}, s3;\n\t"
+//		"mov.b64            s3, {t3, 0};\n\t"
+//		"add.u64            s0, s0, s3;\n\t"
+//		"mov.b64           {z0, z1}, %3;\n\t"
+//		"mul.lo.u32         t2, t2, z0;\n\t"
+//		"mad.hi.u32         t3, t2, m0, 1;\n\t"
+//		"mov.b64            s3, {t3, 0};\n\t"
+//		"mad.wide.u32       s3, t2, m1, s3;\n\t"
+//		"mad.wide.u32       s3, i1, i1, s3;\n\t"
+//		"add.u64            s0, s0, s3;\n\t"
+//		"mov.b64            %0, s0;\n\t" //concatenates t2 and t3 into 1 64 bit word
+//		"}"
+//		: "=l"(io)
+//		: "l"(io), "l"(mod), "l"(mprime));
+//}
