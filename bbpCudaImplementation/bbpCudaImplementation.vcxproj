@@ -77,7 +77,7 @@
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <Optimization>O3</Optimization>
-      <FastMath>true</FastMath>
+      <FastMath>false</FastMath>
       <GPUDebugInfo>false</GPUDebugInfo>
       <GenerateRelocatableDeviceCode>false</GenerateRelocatableDeviceCode>
       <RuntimeChecks>InheritFromHost</RuntimeChecks>
@@ -87,7 +87,6 @@
       <GenerateLineInfo>false</GenerateLineInfo>
       <Runtime>InheritFromHost</Runtime>
       <NvccCompilation>compile</NvccCompilation>
-      <MaxRegCount>42</MaxRegCount>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>

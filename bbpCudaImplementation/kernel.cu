@@ -587,7 +587,7 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 //adds the 128 bit number representing ((2^exp)%mod)/mod to result
 __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract, uint64 expMask) {
 	uint64 output = 1;
-	//uint64 doubleMod = mod << 1;
+	uint64 doubleMod = mod << 1;
 	uint64 mPrime;
 
 	modInverseNewtonsMethod(mod, mPrime);
@@ -637,8 +637,8 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 	}
 
 	//remove these if you don't mind a slight decrease in precision
-	//subtractModIfMoreThanMod(output, doubleMod);
-	//subtractModIfMoreThanMod(output, mod);
+	subtractModIfMoreThanMod(output, doubleMod);//not necessary if directly above conditional subtraction is uncommented
+	subtractModIfMoreThanMod(output, mod);//not necessary if conditional subtraction in montgomery square is uncommented
 
 	if (shift) {
 		fixedPointDivisionExactWithShift(mod, output, -mPrime, result, shift, negative);
