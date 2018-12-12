@@ -20,4 +20,6 @@ line 8: end of benchmark range (inclusive)
 
 Progress is cached periodically in output files under a sub-directory of the bbpCudaImplementation directory titled 'progressCache'.
 
+Multiple CUDA-capable GPUs are detected automatically. All such GPUs will be used. Multiple GPUs are assumed to be of equal capability, and this may lead to inaccuracies in time estimation if this is not true for your system.
+
 In addition to the main thread, an individual thread is dispatched to control each GPU, and another thread controls progress tracking and caching.
