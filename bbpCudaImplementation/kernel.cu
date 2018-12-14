@@ -319,14 +319,14 @@ public:
 		}
 
 		// Allocate GPU buffer for temp vector
-		cudaStatus = cudaMalloc((void**)&dev_ex, this->size * sizeof(sJ));
+		cudaStatus = cudaMalloc((void**)&dev_ex, this->size * sizeof(sJ) * 7);
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMalloc failed!");
 			goto Error;
 		}
 
 		// Allocate GPU buffer for output vector
-		cudaStatus = cudaMalloc((void**)&dev_c, this->size * sizeof(sJ));
+		cudaStatus = cudaMalloc((void**)&dev_c, this->size * sizeof(sJ) * 7);
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMalloc failed!");
 			goto Error;
@@ -348,7 +348,7 @@ public:
 			if (end > this->data->sumEnd) end = this->data->sumEnd;
 
 			// Launch a kernel on the GPU with one thread for each element.
-			bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, this->gpu, begin, end, stride);
+			bbpKernel << <blockCount, threadCountPerBlock * 7 >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, this->gpu, begin, end, stride);
 
 			// Check for any errors launching the kernel
 			cudaStatus = cudaGetLastError();
@@ -369,7 +369,7 @@ public:
 			if (launch % 1000 == 0 && launch) {
 
 				//copy current results into temp array to reduce and update status
-				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ), cudaMemcpyDeviceToDevice);
+				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ) * 7, cudaMemcpyDeviceToDevice);
 				if (cudaStatus != cudaSuccess) {
 					fprintf(stderr, "cudaMemcpy failed in status update!\n");
 					goto Error;
@@ -399,7 +399,7 @@ public:
 			}
 		}
 
-		cudaStatus = reduceSJ(dev_c, size);
+		cudaStatus = reduceSJ(dev_c, size * 7);
 
 		if (cudaStatus != cudaSuccess) {
 			goto Error;
@@ -595,7 +595,7 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 	uint32 mPrime32 = mPrime;
 
-	exp = exp - subtract;
+	//exp = exp - subtract;
 
 	int shift = 0;
 
@@ -647,23 +647,11 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 //stride over all parts of summation in bbp formula where k <= startingExponent
 //to compute partial sJ sums
-__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
+__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 stride, uint64 startingMod, uint64 modCoefficient, int negative, sJ* output, volatile uint64* progress, int progressCheck) {
 	for (uint64 k = start; k <= end; k += stride) {
 		uint64 exp = startingExponent - (k*10LLU);
-		uint64 mod = 4 * k + 1;
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 3);
-		mod += 2;//4k + 3
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 8);
-		mod = 10 * k + 1;
-		modExpLeftToRight(exp, mod, output->s, k & 1, 0);
-		mod += 2;//10k + 3
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 2);
-		mod += 2;//10k + 5
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6);
-		mod += 2;//10k + 7
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6);
-		mod += 2;//10k + 9
-		modExpLeftToRight(exp, mod, output->s , k & 1, 8);
+		uint64 mod = modCoefficient * k + startingMod;
+		modExpLeftToRight(exp, mod, output->s, negative, 3);
 		if (!progressCheck) {
 			//printf("%llu\n", exp);
 			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
@@ -677,9 +665,49 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 __global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 stride)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
-	uint64 start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
+	uint64 start = begin + (gridId + blockDim.x * gridDim.x * gpuNum) / 7;
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
-	bbp(startingExponent, start, end, stride, c + gridId, progress, !!progressCheck);
+	uint64 mod = 0, modCoefficient = 4;
+	int negative = start & 1;
+	switch (gridId % 7) {
+	case 0:
+		mod = 1;//4k + 1
+		startingExponent -= 3;
+		negative ^= 1;
+		break;
+	case 1:
+		mod = 3;//4k + 3
+		startingExponent -= 8;
+		negative ^= 1;
+		break;
+	case 2:
+		mod = 1;//10k + 1
+		modCoefficient = 10;
+		break;
+	case 3:
+		mod = 3;//10k + 3
+		modCoefficient = 10;
+		startingExponent -= 2;
+		negative ^= 1;
+		break;
+	case 4:
+		mod = 5;//10k + 5
+		modCoefficient = 10;
+		startingExponent -= 6;
+		negative ^= 1;
+		break;
+	case 5:
+		mod = 7;//10k + 7
+		modCoefficient = 10;
+		startingExponent -= 6;
+		negative ^= 1;
+		break;
+	case 6:
+		mod = 9;//10k + 9
+		modCoefficient = 10;
+		startingExponent -= 8;
+	}
+	bbp(startingExponent, start, end, stride, mod, modCoefficient, negative, c + gridId, progress, !!progressCheck);
 }
 
 //stride over current leaves of reduce tree
