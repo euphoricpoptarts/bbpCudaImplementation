@@ -73,6 +73,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <SubSystem>Console</SubSystem>
       <AdditionalDependencies>cudart_static.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
@@ -83,11 +84,15 @@
       <RuntimeChecks>InheritFromHost</RuntimeChecks>
       <TypeInfo>InheritFromHost</TypeInfo>
       <HostDebugInfo>false</HostDebugInfo>
-      <CodeGeneration>compute_75,sm_75</CodeGeneration>
-      <GenerateLineInfo>false</GenerateLineInfo>
+      <GenerateLineInfo>true</GenerateLineInfo>
       <Runtime>InheritFromHost</Runtime>
       <NvccCompilation>compile</NvccCompilation>
+      <InterleaveSourceInPTX>true</InterleaveSourceInPTX>
+      <CodeGeneration>compute_75,sm_75</CodeGeneration>
     </CudaCompile>
+    <CudaLink>
+      <Optimization>O3</Optimization>
+    </CudaLink>
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="kernel.cu" />

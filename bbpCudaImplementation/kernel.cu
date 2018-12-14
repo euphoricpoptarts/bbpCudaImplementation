@@ -20,6 +20,7 @@
 
 #define uint32 unsigned int
 #define uint64 unsigned long long
+//#define QUINTILLION
 
 namespace chr = std::chrono;
 
@@ -585,7 +586,7 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
 //adds the 128 bit number representing ((2^exp)%mod)/mod to result
-__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract, uint64 expMask) {
+__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract) {
 	uint64 output = 1;
 	uint64 doubleMod = mod << 1;
 	uint64 mPrime;
@@ -601,7 +602,6 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 	if (exp < 128) {
 		shift = 128 - exp;
 		exp = 128;
-		expMask = 128LLU;
 	}
 
 	//this makes it unnecessary to convert out of montgomery space
@@ -614,30 +614,27 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 	output <<= 1;
 	subtractModIfMoreThanMod(output, mod);
 
-	//align mask with highest set bit in exp
-	while (expMask > exp) expMask >>= 1;
+	int shiftToLittleBit = 63 - __clzll(exp);
 
-	//shift mask to after highest set bit
-	expMask >>= 1;
-
-	while (expMask) {
+	while (shiftToLittleBit-- != 0) {
 
 		montgomerySquare(output, mod, mPrime32, output);
-		//fullMontgomerySquarePTX2(output, mod, mPrime32);
-
-		if (exp & expMask) {
+		
+#ifdef QUINTILLION
+		if ((exp >> shiftToLittleBit) & 1 == 1) {
 			output <<= 1;
-
-			//can be removed if mod < 2^60
-			//subtractModIfMoreThanMod(output, doubleMod);
+			subtractModIfMoreThanMod(output, doubleMod);
 		}
+#else
+		output <<= (exp >> shiftToLittleBit) & 1;
+#endif
 
-		//load next bit
-		expMask >>= 1;
 	}
 
 	//remove these if you don't mind a slight decrease in precision
+#ifndef QUINTILLION
 	subtractModIfMoreThanMod(output, doubleMod);//not necessary if directly above conditional subtraction is uncommented
+#endif
 	subtractModIfMoreThanMod(output, mod);//not necessary if conditional subtraction in montgomery square is uncommented
 
 	if (shift) {
@@ -653,25 +650,20 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
 	for (uint64 k = start; k <= end; k += stride) {
 		uint64 exp = startingExponent - (k*10LLU);
-		//shift represents number of bits needed to shift highest set bit in exp
-		//into the lowest bit
-		int shiftToLittleBits = 63 - __clzll(exp);
-		uint64 mask = 1LLU << shiftToLittleBits;
 		uint64 mod = 4 * k + 1;
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 3, mask);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 3);
 		mod += 2;//4k + 3
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 8, mask);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 8);
 		mod = 10 * k + 1;
-		//would need to make last parameter -2, but negative numbers are not allowed
-		modExpLeftToRight(exp, mod, output->s, k & 1, 0, mask);
+		modExpLeftToRight(exp, mod, output->s, k & 1, 0);
 		mod += 2;//10k + 3
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 2, mask);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 2);
 		mod += 2;//10k + 5
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6, mask);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6);
 		mod += 2;//10k + 7
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6, mask);
+		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6);
 		mod += 2;//10k + 9
-		modExpLeftToRight(exp, mod, output->s , k & 1, 8, mask);
+		modExpLeftToRight(exp, mod, output->s , k & 1, 8);
 		if (!progressCheck) {
 			//printf("%llu\n", exp);
 			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
