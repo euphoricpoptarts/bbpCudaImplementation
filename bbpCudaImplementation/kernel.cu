@@ -365,8 +365,8 @@ public:
 				goto Error;
 			}
 
-			//on every 1000th launch write data to status buffer for progress thread to save
-			if (launch % 1000 == 0 && launch) {
+			//on every 10000th launch write data to status buffer for progress thread to save
+			if (launch % 10000 == 0 && launch) {
 
 				//copy current results into temp array to reduce and update status
 				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ) * 7, cudaMemcpyDeviceToDevice);
@@ -541,7 +541,9 @@ __device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 
 
 	//can be removed if mod < 2^62
 	//see this paper: https://pdfs.semanticscholar.org/0e6a/3e8f30b63b556679f5dff2cbfdfe9523f4fa.pdf
-	//subtractModIfMoreThanMod(output, mod);
+#ifdef QUINTILLION
+	subtractModIfMoreThanMod(output, mod);
+#endif
 }
 
 __device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result, int negative) {
@@ -620,14 +622,14 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 		montgomerySquare(output, mod, mPrime32, output);
 		
-#ifdef QUINTILLION
-		if ((exp >> shiftToLittleBit) & 1 == 1) {
-			output <<= 1;
-			subtractModIfMoreThanMod(output, doubleMod);
-		}
-#else
+//#ifdef QUINTILLION
+//		if ((exp >> shiftToLittleBit) & 1 == 1) {
+//			output <<= 1;
+//			subtractModIfMoreThanMod(output, doubleMod);
+//		}
+//#else
 		output <<= (exp >> shiftToLittleBit) & 1;
-#endif
+//#endif
 
 	}
 
