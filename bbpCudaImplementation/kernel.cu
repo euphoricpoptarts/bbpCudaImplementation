@@ -28,7 +28,7 @@ std::string propertiesFile = "application.properties";
 int totalGpus;
 uint64 strideMultiplier;
 //warpsize is 32 so optimal value is almost certainly a multiple of 32
-const int threadCountPerBlock = 128;
+const int threadCountPerBlock = 1024;
 //blockCount is trickier, and is probably a multiple of the number of streaming multiprocessors in a given gpu
 int blockCount;
 __device__  __constant__ const uint64 twoTo63Power = 0x8000000000000000;
@@ -747,6 +747,7 @@ int loadProperties() {
 		std::cout << "Properties loading failed!" << std::endl;
 		return 1;
 	}
+
 	return 0;
 }
 
@@ -759,7 +760,7 @@ int benchmark() {
 	gpuData.totalGpus = totalGpus;
 	gpuData.initialize(&data, &prog);
 	std::vector<std::pair<double, int>> timings;
-	for (int i = startBlocks; i <= endBlocks; i++) {
+	for (blockCount = startBlocks; blockCount <= endBlocks; blockCount+= 68) {
 		double total = 0.0;
 		for (int j = 0; j < numRuns; j++) {
 			chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
@@ -769,8 +770,8 @@ int benchmark() {
 			total += chr::duration_cast<chr::duration<double>>(end - start).count();
 		}
 		double avg = total / (double)numRuns;
-		std::cout << "Average for " << i << " blocks is " << avg << " seconds." << std::endl;
-		std::pair<double, int> timingPair(avg, i);
+		std::cout << "Average for " << blockCount << " blocks is " << avg << " seconds." << std::endl;
+		std::pair<double, int> timingPair(avg, blockCount);
 		timings.push_back(timingPair);
 	}
 	std::sort(timings.begin(), timings.end());
