@@ -350,7 +350,7 @@ public:
 			if (end > this->data->sumEnd) end = this->data->sumEnd;
 
 			// Launch a kernel on the GPU with one thread for each element.
-			bbpKernel << <blockCount, threadCountPerBlock * 7 >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, this->gpu, begin, end, stride);
+			bbpKernel << <blockCount, threadCountPerBlock * 7 >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, this->gpu, begin, end, strideMultiplier);
 
 			// Check for any errors launching the kernel
 			cudaStatus = cudaGetLastError();
@@ -644,14 +644,12 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 	}
 }
 
-//stride over all parts of summation in bbp formula where k <= startingExponent
-//to compute partial sJ sums
-__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 stride, uint64 startingMod, uint64 modCoefficient, int negative, sJ* output, volatile uint64* progress, int progressCheck) {
-	uint64 endIt = ullmin(end, start + 63);
-
-	//find 2 in montgomery space
-	uint64 startMod = modCoefficient * endIt + startingMod;
-	uint64 montgomeryStart, div;
+//finds montgomeryStart so that 2^65 % startMod = montgomeryStart
+//finds div so that montgomeryStart + n*div is congruent to 2^65 % (startMod - n*modCoefficient)
+//this is possible because montgomery multiplication does not require we know 2^65 % mod exactly, only congruently to a certain limit on size
+//div is inversely proportional to startMod ( div = 2^65 / startMod )
+//montgomeryStart + n*div is < 2*mod for mod > 2^(32.5 + log(n))
+__device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div) {
 	if (startMod > fastModLimit) {
 		div = twoTo63Power / startMod;
 		div <<= 1;
@@ -665,6 +663,18 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 		//will calculate lower bounds on this later
 		//great thing is it doesn't have an upperbound on its usability
 	}
+}
+
+//computes strideMultiplier # of summation terms
+__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 strideMultiplier, uint64 startingMod, uint64 modCoefficient, int negative, sJ* output, volatile uint64* progress, int progressCheck) {
+	uint64 endIt = ullmin(end, start + strideMultiplier - 1);
+
+	//find 2 in montgomery space
+	uint64 startMod = modCoefficient * endIt + startingMod;
+	uint64 montgomeryStart, div;
+
+	fastModApproximator(startMod, modCoefficient, montgomeryStart, div);
+	
 	//go backwards so we can add div instead of subtracting it
 	//subtracting makes things a lot harder
 	//I should write a blog post on how this works
@@ -697,9 +707,10 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 	}
 }
 
-//determine from thread and block position where to begin stride
+//determine from thread and block position which parts of summation to calculate
 //only one of the threads per kernel (AND ONLY ON GPU0) will report progress
-__global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 stride)
+//stride over all parts of summation in bbp formula where k <= startingExponent (between all threads of all launches)
+__global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 strideMultiplier)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
 	uint64 start = begin + ((gridId + blockDim.x * gridDim.x * gpuNum) / 7)*64;
@@ -745,7 +756,7 @@ __global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExpon
 		modCoefficient = 10;
 		startingExponent -= 8;
 	}
-	bbp(startingExponent, start, end, stride, mod, modCoefficient, negative, c + gridId, progress, !!progressCheck);
+	bbp(startingExponent, start, end, strideMultiplier, mod, modCoefficient, negative, c + gridId, progress, !!progressCheck);
 }
 
 //stride over current leaves of reduce tree
