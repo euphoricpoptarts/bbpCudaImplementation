@@ -20,6 +20,7 @@
 
 #define uint32 unsigned int
 #define uint64 unsigned long long
+#define fastModLimit 0xffffff
 //#define QUINTILLION
 
 namespace chr = std::chrono;
@@ -32,7 +33,7 @@ const int threadCountPerBlock = 1024;
 //blockCount is trickier, and is probably a multiple of the number of streaming multiprocessors in a given gpu
 int blockCount;
 __device__  __constant__ const uint64 twoTo63Power = 0x8000000000000000;
-//__device__ int printOnce = 0;
+__device__ int printOnce = 0;
 int primaryGpu;
 int benchmarkBlockCounts;
 int numRuns;
@@ -174,7 +175,7 @@ public:
 					readLines += fscanf(cacheF, "%la", &this->previousTime);
 					for (int i = 0; i < 2; i++) readLines += fscanf(cacheF, "%llX", &this->previousCache.s[i]);
 					fclose(cacheF);
-					//9 lines of data should have been read, 1 continuation point, 1 time, and 7 data points
+					//4 lines of data should have been read, 1 continuation point, 1 time, and 2 data points
 					if (readLines != 4) {
 						std::cout << "Data reading failed!" << std::endl;
 						return 1;
@@ -319,14 +320,14 @@ public:
 		}
 
 		// Allocate GPU buffer for temp vector
-		cudaStatus = cudaMalloc((void**)&dev_ex, this->size * sizeof(sJ));
+		cudaStatus = cudaMalloc((void**)&dev_ex, this->size * sizeof(sJ) * 7);
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMalloc failed!");
 			goto Error;
 		}
 
 		// Allocate GPU buffer for output vector
-		cudaStatus = cudaMalloc((void**)&dev_c, this->size * sizeof(sJ));
+		cudaStatus = cudaMalloc((void**)&dev_c, this->size * sizeof(sJ) * 7);
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaMalloc failed!");
 			goto Error;
@@ -348,7 +349,7 @@ public:
 			if (end > this->data->sumEnd) end = this->data->sumEnd;
 
 			// Launch a kernel on the GPU with one thread for each element.
-			bbpKernel << <blockCount, threadCountPerBlock >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, this->gpu, begin, end, stride);
+			bbpKernel << <blockCount, threadCountPerBlock * 7 >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, this->gpu, begin, end, strideMultiplier);
 
 			// Check for any errors launching the kernel
 			cudaStatus = cudaGetLastError();
@@ -369,13 +370,13 @@ public:
 			if (launch % 1000 == 0 && launch) {
 
 				//copy current results into temp array to reduce and update status
-				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ), cudaMemcpyDeviceToDevice);
+				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ) * 7, cudaMemcpyDeviceToDevice);
 				if (cudaStatus != cudaSuccess) {
 					fprintf(stderr, "cudaMemcpy failed in status update!\n");
 					goto Error;
 				}
 
-				cudaStatus = reduceSJ(dev_ex, size);
+				cudaStatus = reduceSJ(dev_ex, size * 7);
 
 				if (cudaStatus != cudaSuccess) {
 					goto Error;
@@ -399,7 +400,7 @@ public:
 			}
 		}
 
-		cudaStatus = reduceSJ(dev_c, size);
+		cudaStatus = reduceSJ(dev_c, size * 7);
 
 		if (cudaStatus != cudaSuccess) {
 			goto Error;
@@ -541,7 +542,9 @@ __device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 
 
 	//can be removed if mod < 2^62
 	//see this paper: https://pdfs.semanticscholar.org/0e6a/3e8f30b63b556679f5dff2cbfdfe9523f4fa.pdf
-	//subtractModIfMoreThanMod(output, mod);
+#ifdef QUINTILLION
+	subtractModIfMoreThanMod(output, mod);
+#endif
 }
 
 __device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result, int negative) {
@@ -586,7 +589,7 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
 //adds the 128 bit number representing ((2^exp)%mod)/mod to result
-__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 subtract) {
+__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 montgomeryStart) {
 	uint64 output = 1;
 	uint64 doubleMod = mod << 1;
 	uint64 mPrime;
@@ -595,7 +598,7 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 	uint32 mPrime32 = mPrime;
 
-	exp = exp - subtract;
+	//exp = exp - subtract;
 
 	int shift = 0;
 
@@ -607,12 +610,7 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 	//this makes it unnecessary to convert out of montgomery space
 	exp -= 64;
 
-	//find 2 in montgomery space
-	output = twoTo63Power % mod;
-	output <<= 1;
-	subtractModIfMoreThanMod(output, mod);
-	output <<= 1;
-	subtractModIfMoreThanMod(output, mod);
+	output = montgomeryStart;
 
 	int shiftToLittleBit = 63 - __clzll(exp);
 
@@ -620,22 +618,22 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 		montgomerySquare(output, mod, mPrime32, output);
 		
-#ifdef QUINTILLION
-		if ((exp >> shiftToLittleBit) & 1 == 1) {
-			output <<= 1;
-			subtractModIfMoreThanMod(output, doubleMod);
-		}
-#else
+//#ifdef QUINTILLION
+//		if ((exp >> shiftToLittleBit) & 1 == 1) {
+//			output <<= 1;
+//			subtractModIfMoreThanMod(output, doubleMod);
+//		}
+//#else
 		output <<= (exp >> shiftToLittleBit) & 1;
-#endif
+//#endif
 
 	}
 
 	//remove these if you don't mind a slight decrease in precision
 #ifndef QUINTILLION
-	subtractModIfMoreThanMod(output, doubleMod);//not necessary if directly above conditional subtraction is uncommented
+	subtractModIfMoreThanMod(output, doubleMod);
 #endif
-	subtractModIfMoreThanMod(output, mod);//not necessary if conditional subtraction in montgomery square is uncommented
+	subtractModIfMoreThanMod(output, mod);
 
 	if (shift) {
 		fixedPointDivisionExactWithShift(mod, output, -mPrime, result, shift, negative);
@@ -645,41 +643,119 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 	}
 }
 
-//stride over all parts of summation in bbp formula where k <= startingExponent
-//to compute partial sJ sums
-__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 stride, sJ* output, volatile uint64* progress, int progressCheck) {
-	for (uint64 k = start; k <= end; k += stride) {
-		uint64 exp = startingExponent - (k*10LLU);
-		uint64 mod = 4 * k + 1;
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 3);
-		mod += 2;//4k + 3
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 8);
-		mod = 10 * k + 1;
-		modExpLeftToRight(exp, mod, output->s, k & 1, 0);
-		mod += 2;//10k + 3
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 2);
-		mod += 2;//10k + 5
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6);
-		mod += 2;//10k + 7
-		modExpLeftToRight(exp, mod, output->s, (k & 1) ^ 1, 6);
-		mod += 2;//10k + 9
-		modExpLeftToRight(exp, mod, output->s , k & 1, 8);
-		if (!progressCheck) {
-			//printf("%llu\n", exp);
-			//only 1 thread (with gridId 0 on GPU0) ever updates the progress
-			*progress = k;
-		}
+//finds montgomeryStart so that 2^65 % startMod = montgomeryStart
+//finds div so that montgomeryStart + n*div is congruent to 2^65 % (startMod - n*modCoefficient)
+//this is possible because montgomery multiplication does not require we know 2^65 % mod exactly, only congruently to a certain limit on size
+//div is inversely proportional to startMod ( div = 2^65 / startMod )
+//montgomeryStart + n*div is < 2*mod for mod > 2^(32.5 + log(n))
+__device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div) {
+	if (startMod > fastModLimit) {
+		div = twoTo63Power / startMod;
+		div <<= 1;
+		if ((div * startMod) + startMod > (div * startMod)) div++;
+		div <<= 1;
+		if ((div * startMod) + startMod > (div * startMod)) div++;
+		montgomeryStart = 0 - (div * startMod);
+		div *= modCoefficient;
+		//now we can use div to go from (n % x) => (n % (x - modCoefficient)) with one addition!
+		//presuming x is large enough ( > fastModLimit)
+		//will calculate lower bounds on this later
+		//great thing is it doesn't have an upperbound on its usability
 	}
 }
 
-//determine from thread and block position where to begin stride
+//computes strideMultiplier # of summation terms
+__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 strideMultiplier, uint64 startingMod, uint64 modCoefficient, int negative, sJ* output, volatile uint64* progress, int progressCheck) {
+	uint64 endIt = ullmin(end, start + strideMultiplier - 1);
+
+	//find 2 in montgomery space
+	uint64 startMod = modCoefficient * endIt + startingMod;
+	uint64 montgomeryStart, div;
+
+	fastModApproximator(startMod, modCoefficient, montgomeryStart, div);
+	
+	//go backwards so we can add div instead of subtracting it
+	//subtracting makes things a lot harder
+	//I should write a blog post on how this works
+	for (uint64 k = endIt; k >= start && k <= endIt; k--) {
+		uint64 exp = startingExponent - (k*10LLU);
+		uint64 mod = modCoefficient * k + startingMod;
+		if(startMod <= fastModLimit) {
+			montgomeryStart = twoTo63Power % mod;
+			montgomeryStart <<= 1;
+			subtractModIfMoreThanMod(montgomeryStart, mod);
+			montgomeryStart <<= 1;
+			subtractModIfMoreThanMod(montgomeryStart, mod);
+		}
+
+		//negative is given as the sign of the coefficient when k = start, but since endIt is an odd offset from it, we can just flip it immediately, and then flip it again every iteration
+		//though if ullmin(end, start + 63) chooses end and end is even... (will fix this later)
+		negative ^= 1;
+
+		modExpLeftToRight(exp, mod, output->s, negative, montgomeryStart);
+
+		if (startMod > fastModLimit) {
+			montgomeryStart += div;
+		}
+	}
+
+	if (!progressCheck) {
+		//printf("%llu\n", exp);
+		//only 1 thread (with gridId 0 on GPU0) ever updates the progress
+		*progress = endIt;
+	}
+}
+
+//determine from thread and block position which parts of summation to calculate
 //only one of the threads per kernel (AND ONLY ON GPU0) will report progress
-__global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 stride)
+//stride over all parts of summation in bbp formula where k <= startingExponent (between all threads of all launches)
+__global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 strideMultiplier)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
-	uint64 start = begin + gridId + blockDim.x * gridDim.x * gpuNum;
+	uint64 start = begin + ((gridId + blockDim.x * gridDim.x * gpuNum) / 7)*strideMultiplier;
+	
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
-	bbp(startingExponent, start, end, stride, c + gridId, progress, !!progressCheck);
+	uint64 mod = 0, modCoefficient = 4;
+	int negative = start & 1;
+	switch (gridId % 7) {
+	case 0:
+		mod = 1;//4k + 1
+		startingExponent -= 3;
+		negative ^= 1;
+		break;
+	case 1:
+		mod = 3;//4k + 3
+		startingExponent -= 8;
+		negative ^= 1;
+		break;
+	case 2:
+		mod = 1;//10k + 1
+		modCoefficient = 10;
+		break;
+	case 3:
+		mod = 3;//10k + 3
+		modCoefficient = 10;
+		startingExponent -= 2;
+		negative ^= 1;
+		break;
+	case 4:
+		mod = 5;//10k + 5
+		modCoefficient = 10;
+		startingExponent -= 6;
+		negative ^= 1;
+		break;
+	case 5:
+		mod = 7;//10k + 7
+		modCoefficient = 10;
+		startingExponent -= 6;
+		negative ^= 1;
+		break;
+	case 6:
+		mod = 9;//10k + 9
+		modCoefficient = 10;
+		startingExponent -= 8;
+	}
+	bbp(startingExponent, start, end, strideMultiplier, mod, modCoefficient, negative, c + gridId, progress, !!progressCheck);
 }
 
 //stride over current leaves of reduce tree
