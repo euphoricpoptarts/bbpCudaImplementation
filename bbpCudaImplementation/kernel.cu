@@ -2,7 +2,6 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "device_atomic_functions.h"
-#include "device_functions.h"
 
 #include <stdio.h>
 #include <math.h>
@@ -176,7 +175,7 @@ public:
 					readLines += fscanf(cacheF, "%la", &this->previousTime);
 					for (int i = 0; i < 2; i++) readLines += fscanf(cacheF, "%llX", &this->previousCache.s[i]);
 					fclose(cacheF);
-					//9 lines of data should have been read, 1 continuation point, 1 time, and 7 data points
+					//4 lines of data should have been read, 1 continuation point, 1 time, and 2 data points
 					if (readLines != 4) {
 						std::cout << "Data reading failed!" << std::endl;
 						return 1;
@@ -367,7 +366,7 @@ public:
 				goto Error;
 			}
 
-			//on every 4000th launch write data to status buffer for progress thread to save
+			//on every 1000th launch write data to status buffer for progress thread to save
 			if (launch % 1000 == 0 && launch) {
 
 				//copy current results into temp array to reduce and update status
@@ -632,9 +631,9 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 	//remove these if you don't mind a slight decrease in precision
 #ifndef QUINTILLION
-	subtractModIfMoreThanMod(output, doubleMod);//not necessary if directly above conditional subtraction is uncommented
+	subtractModIfMoreThanMod(output, doubleMod);
 #endif
-	subtractModIfMoreThanMod(output, mod);//not necessary if conditional subtraction in montgomery square is uncommented
+	subtractModIfMoreThanMod(output, mod);
 
 	if (shift) {
 		fixedPointDivisionExactWithShift(mod, output, -mPrime, result, shift, negative);
@@ -713,7 +712,7 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 __global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 strideMultiplier)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
-	uint64 start = begin + ((gridId + blockDim.x * gridDim.x * gpuNum) / 7)*64;
+	uint64 start = begin + ((gridId + blockDim.x * gridDim.x * gpuNum) / 7)*strideMultiplier;
 	
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
 	uint64 mod = 0, modCoefficient = 4;
