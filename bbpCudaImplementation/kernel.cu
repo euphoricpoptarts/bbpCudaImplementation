@@ -29,7 +29,7 @@ std::string propertiesFile = "application.properties";
 int totalGpus;
 uint64 strideMultiplier;
 //warpsize is 32 so optimal value is almost certainly a multiple of 32
-const int threadCountPerBlock = 1024;
+const int threadCountPerBlock = 128;
 //blockCount is trickier, and is probably a multiple of the number of streaming multiprocessors in a given gpu
 int blockCount;
 __device__  __constant__ const uint64 twoTo63Power = 0x8000000000000000;
@@ -349,7 +349,7 @@ public:
 			if (end > this->data->sumEnd) end = this->data->sumEnd;
 
 			// Launch a kernel on the GPU with one thread for each element.
-			bbpKernel << <blockCount, threadCountPerBlock * 7 >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, this->gpu, begin, end, strideMultiplier);
+			bbpKernel << <blockCount * 7, threadCountPerBlock >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, this->gpu, begin, end, strideMultiplier);
 
 			// Check for any errors launching the kernel
 			cudaStatus = cudaGetLastError();
