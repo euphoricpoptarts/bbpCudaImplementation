@@ -219,7 +219,7 @@ public:
 			timeQ.push_front(now);
 
 			//progressQ and timeQ should be same size at all times
-			if (progressQ.size() > 1000) {
+			if (progressQ.size() > 100) {
 				progressQ.pop_back();
 				timeQ.pop_back();
 			}
