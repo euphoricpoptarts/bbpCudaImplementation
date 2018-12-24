@@ -203,8 +203,13 @@ public:
 	void progressCheck() {
 
 		std::deque<double> progressQ;
+		std::deque<std::pair<double, double>> progressRateQ;
 		std::deque<chr::high_resolution_clock::time_point> timeQ;
 		int count = 0;
+		FILE   *pPipe;
+		bool pipeOpen = false;
+		if (pPipe = _popen("\"c:\\program files\\gnuplot\\bin\\gnuplot.exe\"", "w")) pipeOpen = true;
+		chr::high_resolution_clock::time_point beginning = chr::high_resolution_clock::now();
 		while (!this->quit) {
 			count++;
 			double progress = (double)(*(this->currentProgress)) / (double)this->maxProgress;
@@ -214,7 +219,7 @@ public:
 			timeQ.push_front(now);
 
 			//progressQ and timeQ should be same size at all times
-			if (progressQ.size() > 100) {
+			if (progressQ.size() > 1000) {
 				progressQ.pop_back();
 				timeQ.pop_back();
 			}
@@ -222,6 +227,10 @@ public:
 			double progressInPeriod = progressQ.front() - progressQ.back();
 			double elapsedPeriod = chr::duration_cast<chr::duration<double>>(timeQ.front() - timeQ.back()).count();
 			double progressPerSecond = progressInPeriod / elapsedPeriod;
+			progressRateQ.push_front(std::make_pair(chr::duration_cast<chr::duration<double>>(timeQ.front() - beginning).count(), progressPerSecond * 100.0));
+			if (progressRateQ.size() > 1000) {
+				progressRateQ.pop_back();
+			}
 
 			double timeEst = (1.0 - progress) / (progressPerSecond);
 			//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
@@ -230,6 +239,18 @@ public:
 			if (count == 10) {
 				count = 0;
 				printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond, time);
+				if (pipeOpen) {
+					FILE * rateTemp;
+					rateTemp = fopen("rateTempHolder/rateTemp.dat", "w+");
+					if (rateTemp) {
+						for (auto& rate : progressRateQ) {
+							fprintf(rateTemp, "%.8f %.8f\n", rate.first, rate.second);
+						}
+						fclose(rateTemp);
+						fprintf(pPipe, "plot 'rateTempHolder/rateTemp.dat' with lines\n");
+						fflush(pPipe);
+					}
+				}
 			}
 
 			int expected = totalGpus;
@@ -277,6 +298,10 @@ public:
 			}
 
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		if (pipeOpen) {
+			fprintf(pPipe, "q\n");
+			_pclose(pPipe);
 		}
 	}
 };
