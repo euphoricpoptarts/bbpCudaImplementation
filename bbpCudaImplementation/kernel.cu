@@ -206,9 +206,13 @@ public:
 		std::deque<std::pair<double, double>> progressRateQ;
 		std::deque<chr::high_resolution_clock::time_point> timeQ;
 		int count = 0;
+
+		//a gnuplot process to which commands will be fed to live update a progress rate graph
 		FILE   *pPipe;
 		bool pipeOpen = false;
+		bool chartInitialized = false;
 		if (pPipe = _popen("\"c:\\program files\\gnuplot\\bin\\gnuplot.exe\"", "w")) pipeOpen = true;
+
 		chr::high_resolution_clock::time_point beginning = chr::high_resolution_clock::now();
 		while (!this->quit) {
 			count++;
@@ -227,7 +231,7 @@ public:
 			double progressInPeriod = progressQ.front() - progressQ.back();
 			double elapsedPeriod = chr::duration_cast<chr::duration<double>>(timeQ.front() - timeQ.back()).count();
 			double progressPerSecond = progressInPeriod / elapsedPeriod;
-			progressRateQ.push_front(std::make_pair(chr::duration_cast<chr::duration<double>>(timeQ.front() - beginning).count(), progressPerSecond * 100.0));
+			progressRateQ.emplace_front(chr::duration_cast<chr::duration<double>>(timeQ.front() - beginning).count(), progressPerSecond * 100.0);
 			if (progressRateQ.size() > 1000) {
 				progressRateQ.pop_back();
 			}
@@ -243,11 +247,22 @@ public:
 					FILE * rateTemp;
 					rateTemp = fopen("rateTempHolder/rateTemp.dat", "w+");
 					if (rateTemp) {
+						//write the progress rate data to the temp file
 						for (auto& rate : progressRateQ) {
 							fprintf(rateTemp, "%.8f %.8f\n", rate.first, rate.second);
 						}
 						fclose(rateTemp);
-						fprintf(pPipe, "plot 'rateTempHolder/rateTemp.dat' with lines\n");
+						if (!chartInitialized) {
+							//initialize the chart
+							fprintf(pPipe, "set terminal wxt size 1280, 720\n");
+							fprintf(pPipe, "plot 'rateTempHolder/rateTemp.dat' with lines\n");
+							fprintf(pPipe, "set xlabel 'Time (seconds) since program launch'\n");
+							fprintf(pPipe, "set ylabel 'Progress per second'\n");
+							chartInitialized = true;
+						}
+						//refresh the chart
+						else fprintf(pPipe, "replot\n");
+						//flush the buffer to ensure the commands are sent to the gnuplot process
 						fflush(pPipe);
 					}
 				}
