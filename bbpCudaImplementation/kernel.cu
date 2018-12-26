@@ -366,8 +366,8 @@ public:
 				goto Error;
 			}
 
-			//on every 1000th launch write data to status buffer for progress thread to save
-			if (launch % 1000 == 0 && launch) {
+			//on every 10000th launch write data to status buffer for progress thread to save
+			if (launch % 10000 == 0 && launch) {
 
 				//copy current results into temp array to reduce and update status
 				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ) * 7, cudaMemcpyDeviceToDevice);
