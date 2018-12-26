@@ -200,11 +200,14 @@ public:
 	}
 
 	//this function is meant to be run by an independent thread to output progress to the console
+	//outputs progress data on the same line, overwriting with each updating
+	//only the data caching message creates a new line
 	void progressCheck() {
 
 		std::deque<double> progressQ;
 		std::deque<chr::high_resolution_clock::time_point> timeQ;
 		int count = 0;
+		int lastPrintSize = 0;
 		while (!this->quit) {
 			count++;
 			double progress = (double)(*(this->currentProgress)) / (double)this->maxProgress;
@@ -229,7 +232,11 @@ public:
 			//only print every 10th cycle or 0.1 seconds
 			if (count == 10) {
 				count = 0;
-				printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond, time);
+				char progBuff[256];
+				lastPrintSize = snprintf(progBuff, 256, "Current progress is %7.3f%%. Estimated total runtime remaining is %10.3f seconds. Avg rate is %9.5f%%. Time elapsed is %10.3f seconds.", 100.0*progress, timeEst, 100.0*progressPerSecond, time);
+				//althought this is printed on the same line, no need to worry about 2 lines being different sizes due to constant field widths
+				printf("\r%s", progBuff);
+				fflush(stdout);
 			}
 
 			int expected = totalGpus;
@@ -251,12 +258,16 @@ public:
 
 					snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%09.6f.dat", this->maxProgress, 100.0*savedProgress);
 
-					//would like to do this with ofstream and std::hexfloat
-					//but msvc is a microsoft product so...
 					FILE * file;
 					file = fopen(buffer, "w+");
 					if (file != NULL) {
-						printf("Writing data to disk\n");
+						std::string cacheMessage = "Caching current state data to " + std::string(buffer);
+						if (cacheMessage.size() < lastPrintSize) {
+							//pad with spaces to fully overwrite the line
+							cacheMessage += std::string(lastPrintSize - cacheMessage.size(), ' ');
+						}
+						printf("\r%s\n", cacheMessage.c_str());
+						lastPrintSize = 0;
 						fprintf(file, "%llu\n", contProcess);
 						fprintf(file, "%a\n", time);
 						sJ currStatus = this->previousCache;
@@ -278,6 +289,7 @@ public:
 
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
+		printf("\n");
 	}
 };
 
