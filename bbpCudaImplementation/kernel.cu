@@ -649,7 +649,6 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 //div is inversely proportional to startMod ( div = 2^65 / startMod )
 //montgomeryStart + n*div is < 2*mod for mod > 2^(32.5 + log(n))
 __device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div) {
-	if (startMod > fastModLimit) {
 		div = twoTo63Power / startMod;
 		div <<= 1;
 		if ((div * startMod) + startMod > (div * startMod)) div++;
@@ -661,7 +660,6 @@ __device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 modCoef
 		//presuming x is large enough ( > fastModLimit)
 		//will calculate lower bounds on this later
 		//great thing is it doesn't have an upperbound on its usability
-	}
 }
 
 //computes strideMultiplier # of summation terms
@@ -671,6 +669,8 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 	//find 2 in montgomery space
 	uint64 startMod = modCoefficient * endIt + startingMod;
 	uint64 montgomeryStart, div;
+
+	negative ^= endIt & 1;
 
 	fastModApproximator(startMod, modCoefficient, montgomeryStart, div);
 	
@@ -688,17 +688,14 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 			subtractModIfMoreThanMod(montgomeryStart, mod);
 		}
 
-		//negative is given as the sign of the coefficient when k = start, but since endIt is an odd offset from it, we can just flip it immediately, and then flip it again every iteration
-		//though if ullmin(end, start + 63) chooses end and end is even... (will fix this later)
-		negative ^= 1;
-
 		modExpLeftToRight(exp, mod, output->s, negative, montgomeryStart);
 
-		if (startMod > fastModLimit) {
-			montgomeryStart += div;
-		}
+		negative ^= 1;
+		montgomeryStart += div;
 	}
 
+	//you may ask: "this only updates on one of the threads once per launch. what's the point of doing this in the kernel?"
+	//good question
 	if (!progressCheck) {
 		//printf("%llu\n", exp);
 		//only 1 thread (with gridId 0 on GPU0) ever updates the progress
