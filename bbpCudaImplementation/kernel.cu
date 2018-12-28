@@ -645,7 +645,7 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 //finds montgomeryStart so that 2^65 % startMod = montgomeryStart
 //finds div so that montgomeryStart + n*div is congruent to 2^65 % (startMod - n*modCoefficient)
-//this is possible because montgomery multiplication does not require we know 2^65 % mod exactly, only congruently to a certain limit on size
+//this is possible because montgomery multiplication does not require we know 2^65 % mod exactly, but requires we know a number congruent to 2^65 % mod (as long as this number is less than 2^63)
 //div is inversely proportional to startMod ( div = 2^65 / startMod )
 //montgomeryStart + n*div is < 2*mod for mod > 2^(32.5 + log(n))
 __device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div) {
@@ -656,10 +656,6 @@ __device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 modCoef
 		if ((div * startMod) + startMod > (div * startMod)) div++;
 		montgomeryStart = 0 - (div * startMod);
 		div *= modCoefficient;
-		//now we can use div to go from (n % x) => (n % (x - modCoefficient)) with one addition!
-		//presuming x is large enough ( > fastModLimit)
-		//will calculate lower bounds on this later
-		//great thing is it doesn't have an upperbound on its usability
 }
 
 //computes strideMultiplier # of summation terms
@@ -675,8 +671,7 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 	fastModApproximator(startMod, modCoefficient, montgomeryStart, div);
 	
 	//go backwards so we can add div instead of subtracting it
-	//subtracting makes things a lot harder
-	//I should write a blog post on how this works
+	//subtracting produces a likelihood of underflow (whereas addition will not cause overflow for any mod where 2^8 < mod < (2^64 - 2^8) )
 	for (uint64 k = endIt; k >= start && k <= endIt; k--) {
 		uint64 exp = startingExponent - (k*10LLU);
 		uint64 mod = modCoefficient * k + startingMod;
