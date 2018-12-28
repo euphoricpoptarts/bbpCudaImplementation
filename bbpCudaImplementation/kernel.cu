@@ -660,19 +660,16 @@ __device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 modCoef
 
 //computes strideMultiplier # of summation terms
 __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 strideMultiplier, uint64 startingMod, uint64 modCoefficient, int negative, sJ* output, volatile uint64* progress, int progressCheck) {
-	uint64 endIt = ullmin(end, start + strideMultiplier - 1);
 
 	//find 2 in montgomery space
-	uint64 startMod = modCoefficient * endIt + startingMod;
+	uint64 startMod = modCoefficient * end + startingMod;
 	uint64 montgomeryStart, div;
-
-	negative ^= endIt & 1;
 
 	fastModApproximator(startMod, modCoefficient, montgomeryStart, div);
 	
 	//go backwards so we can add div instead of subtracting it
 	//subtracting produces a likelihood of underflow (whereas addition will not cause overflow for any mod where 2^8 < mod < (2^64 - 2^8) )
-	for (uint64 k = endIt; k >= start && k <= endIt; k--) {
+	for (uint64 k = end; k >= start && k <= end; k--) {
 		uint64 exp = startingExponent - (k*10LLU);
 		uint64 mod = modCoefficient * k + startingMod;
 		if(startMod <= fastModLimit) {
@@ -694,7 +691,7 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 	if (!progressCheck) {
 		//printf("%llu\n", exp);
 		//only 1 thread (with gridId 0 on GPU0) ever updates the progress
-		*progress = endIt;
+		*progress = end;
 	}
 }
 
@@ -708,7 +705,8 @@ __global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExpon
 	
 	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
 	uint64 mod = 0, modCoefficient = 4;
-	int negative = start & 1;
+	end = ullmin(end, start + strideMultiplier - 1);
+	int negative = end & 1;
 	switch (gridId % 7) {
 	case 0:
 		mod = 1;//4k + 1
