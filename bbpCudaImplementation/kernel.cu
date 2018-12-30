@@ -651,10 +651,10 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 __device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div) {
 		div = twoTo63Power / startMod;
 		div <<= 1;
-		if ((div * startMod) + startMod > (div * startMod)) div++;
+		if (-(div * startMod) > startMod) div++;
 		div <<= 1;
-		if ((div * startMod) + startMod > (div * startMod)) div++;
-		montgomeryStart = 0 - (div * startMod);
+		if (-(div * startMod) > startMod) div++;
+		montgomeryStart = 0 - (div * startMod);// 2^65 - div*startMod = 2^65 % startMod
 		div *= modCoefficient;
 }
 
