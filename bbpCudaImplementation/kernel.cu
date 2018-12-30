@@ -542,9 +542,6 @@ __device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 
 	uint64 tlo = 0;// , tm = 0;
 
 	square64By64(abar, &tlo, &output);
-	/*output += !!tlo;
-	multiply64By64LoOnly(tlo, mprime, &tm);
-	multiply64By64PlusHi(tm, mod, &output);*/
 
 	montgomeryAddAndShift32Bit(output, tlo, mod, mprime);
 
