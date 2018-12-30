@@ -38,8 +38,7 @@ int primaryGpu;
 int benchmarkBlockCounts;
 int numRuns;
 uint64 benchmarkTarget;
-int startBlocks;
-int endBlocks;
+int startBlocks, blocksIncrement, incrementLimit;
 
 struct sJ {
 	uint64 s[2] = { 0, 0};
@@ -808,8 +807,9 @@ int loadProperties() {
 	readLines += fscanf(propF, "%d", &numRuns);
 	readLines += fscanf(propF, "%llu", &benchmarkTarget);
 	readLines += fscanf(propF, "%d", &startBlocks);
-	readLines += fscanf(propF, "%d", &endBlocks);
-	if (readLines != 8) {
+	readLines += fscanf(propF, "%d", &blocksIncrement);
+	readLines += fscanf(propF, "%d", &incrementLimit);
+	if (readLines != 9) {
 		std::cout << "Properties loading failed!" << std::endl;
 		return 1;
 	}
@@ -826,7 +826,7 @@ int benchmark() {
 	gpuData.totalGpus = totalGpus;
 	gpuData.initialize(&data, &prog);
 	std::vector<std::pair<double, int>> timings;
-	for (blockCount = startBlocks; blockCount <= endBlocks; blockCount+= 68) {
+	for (blockCount = startBlocks; blockCount <= (startBlocks + incrementLimit*blocksIncrement); blockCount += blocksIncrement) {
 		double total = 0.0;
 		for (int j = 0; j < numRuns; j++) {
 			chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
