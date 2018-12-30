@@ -426,6 +426,10 @@ public:
 int bbpLauncher::totalLaunchers = 0;
 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of squaring a 64 bit number
+//in assembly in order to access carry bit
+//saves work with realization that (hi + lo)^2 = hi^2 + 2*hi*lo + lo^2
+//compare to non-squaring multiplication (hi1 + lo1)*(hi2 + lo2) = hi1*hi2 + hi1*lo2 + lo1*hi2 + lo1*lo2
+//one fewer multiplication is needed
 __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
 
 	asm("{\n\t"
@@ -460,7 +464,8 @@ __device__ void subtractModIfMoreThanMod(uint64 & value, const uint64 & mod) {
 		: "l"(value), "l"(mod));
 }
 
-//using R=2^32, performs the 2-word montgomery reduction on the number represented by hi and lo
+//using R=2^32, performs a 2 step montgomery reduction on the 128-bit number represented by hi and lo
+//assembly is used to access carry bit
 __device__ void montgomeryAddAndShift32Bit(uint64 & hi, uint64 & lo, const uint64 & mod, const uint32 & mprime) {
 	//a : multiplicand
 	//b : multiplier
@@ -471,19 +476,23 @@ __device__ void montgomeryAddAndShift32Bit(uint64 & hi, uint64 & lo, const uint6
 		"mov.b64           {m0, m1}, %3;\n\t" //splits mod into m0 and m1
 		"mov.b64           {t0, t1}, %1;\n\t" //splits lo into hi and lo 32 bit words
 		"mov.b64           {t2, t3}, %2;\n\t" //splits hi into hi and lo 32 bit words
-		"mul.lo.u32         z0, %4, t0;\n\t" //z0 =  lo(mprime*lolo)
-		"mad.lo.cc.u32      t0, z0, m0, t0;\n\t" //t0 = lolo + lo(t0 * z0)
+
+		//montgomery reduction on least significant 32-bit word
+		"mul.lo.u32         z0, %4, t0;\n\t"
+		"mad.lo.cc.u32      t0, z0, m0, t0;\n\t"
 		"madc.hi.cc.u32     t1, z0, m0, t1;\n\t"
 		"addc.cc.u32        t2,  0, t2;\n\t"
 		"addc.u32           t3,  0, t3;\n\t"
 		"mad.lo.cc.u32      t1, z0, m1, t1;\n\t"
 		"madc.hi.cc.u32     t2, z0, m1, t2;\n\t"
 		"addc.u32           t3,  0, t3;\n\t"
-		"mul.lo.u32         z0, %4, t1;\n\t" //z0 =  lo(mprime*t1)
+
+		//montgomery reduction on second least significant 32-bit word
+		"mul.lo.u32         z0, %4, t1;\n\t"
 		"mad.lo.cc.u32      t1, z0, m0, t1;\n\t"
 		"madc.hi.cc.u32     t2, z0, m0, t2;\n\t"
 		"addc.u32           t3,  0, t3;\n\t"
-		"mad.lo.cc.u32      t2, z0, m1, t2;\n\t" //t0 = lolo + lo(t0 * z0)
+		"mad.lo.cc.u32      t2, z0, m1, t2;\n\t"
 		"madc.hi.u32        t3, z0, m1, t3;\n\t"
 		"mov.b64            %0, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
 		"}"
