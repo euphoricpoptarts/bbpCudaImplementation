@@ -44,7 +44,7 @@ struct sJ {
 	uint64 s[2] = { 0, 0};
 };
 
-__global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 stride);
+__global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 stride);
 cudaError_t reduceSJ(sJ *c, unsigned int size);
 
 //adds all elements of addend and augend, storing in addend
@@ -79,7 +79,7 @@ public:
 class progressData {
 public:
 	volatile uint64 * currentProgress;
-	volatile uint64 * deviceProg;
+	uint64 * deviceProg;
 	sJ previousCache;
 	double previousTime;
 	sJ * status;
@@ -94,7 +94,8 @@ public:
 		std::atomic_init(&this->dataWritten, 0);
 
 		//these variables are linked between host and device memory allowing each to communicate about progress
-		volatile uint64 *currProgHost, *currProgDevice;
+		volatile uint64 *currProgHost;
+		uint64 * currProgDevice;
 
 		this->status = new sJ[gpus];
 		this->nextStrideBegin = new uint64[gpus];
@@ -656,7 +657,7 @@ __device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 modCoef
 }
 
 //computes strideMultiplier # of summation terms
-__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 strideMultiplier, uint64 startingMod, uint64 modCoefficient, int negative, sJ* output, volatile uint64* progress, int progressCheck) {
+__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 strideMultiplier, uint64 startingMod, uint64 modCoefficient, int negative, sJ* output, uint64* progress, int progressCheck) {
 
 	//find 2 in montgomery space
 	uint64 startMod = modCoefficient * end + startingMod;
@@ -683,19 +684,18 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 		montgomeryStart += div;
 	}
 
-	//you may ask: "this only updates on one of the threads once per launch. what's the point of doing this in the kernel?"
-	//good question
-	if (!progressCheck) {
+	if ((start & 0xffff) == 0) {
 		//printf("%llu\n", exp);
 		//only 1 thread (with gridId 0 on GPU0) ever updates the progress
-		*progress = end;
+		//*progress = end;
+		atomicMax(progress, end);
 	}
 }
 
 //determine from thread and block position which parts of summation to calculate
 //only one of the threads per kernel (AND ONLY ON GPU0) will report progress
 //stride over all parts of summation in bbp formula where k <= startingExponent (between all threads of all launches)
-__global__ void bbpKernel(sJ *c, volatile uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 strideMultiplier)
+__global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 strideMultiplier)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
 	uint64 start = begin + ((gridId + blockDim.x * gridDim.x * gpuNum) / 7)*strideMultiplier;
