@@ -39,6 +39,7 @@ int benchmarkBlockCounts;
 int numRuns;
 uint64 benchmarkTarget;
 int startBlocks, blocksIncrement, incrementLimit;
+const uint64 cachePeriod = 20000;
 
 struct sJ {
 	uint64 s[2] = { 0, 0};
@@ -336,28 +337,10 @@ public:
 			uint64 end = this->data->beginFrom + (launchWidth * (currentLaunch + 1)) - 1;
 			if (end > this->data->sumEnd) end = this->data->sumEnd;
 
-			// Launch a kernel on the GPU with one thread for each element.
-			bbpKernel << <blockCount * 7, threadCountPerBlock >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, begin, end, strideMultiplier);
+			//after exactly cachePeriod number of launches since last period between all gpus, write all data computed during and before the period to status buffer for progress thread to save
+			if ((currentLaunch - lastWrite) >= cachePeriod) {
 
-			// Check for any errors launching the kernel
-			cudaStatus = cudaGetLastError();
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "bbpKernel launch failed on gpu%d: %s\n", this->gpu, cudaGetErrorString(cudaStatus));
-				goto Error;
-			}
-
-			// cudaDeviceSynchronize waits for the kernel to finish, and returns
-			// any errors encountered during the launch.
-			cudaStatus = cudaDeviceSynchronize();
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu %d!\n", cudaStatus, this->gpu);
-				goto Error;
-			}
-
-			//after ~20,000 launches between all gpus, write data to status buffer for progress thread to save
-			if ((currentLaunch - lastWrite) >= 20000) {
-
-				lastWrite = currentLaunch;
+				lastWrite += cachePeriod;
 
 				//copy current results into temp array to reduce and update status
 				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ) * 7, cudaMemcpyDeviceToDevice);
@@ -380,12 +363,27 @@ public:
 				}
 
 				this->prog->status[this->gpu] = c[0];
-
-				//set nextStrideBegin to max of its current value and end + 1
-				uint64 expected = this->prog->nextStrideBegin;
-				while(!this->prog->nextStrideBegin.compare_exchange_strong(expected, std::max(expected, end + 1)));
+				this->prog->nextStrideBegin = this->data->beginFrom + (launchWidth * lastWrite);
 
 				this->prog->dataWritten++;
+			}
+
+			// Launch a kernel on the GPU with one thread for each element.
+			bbpKernel << <blockCount * 7, threadCountPerBlock >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, begin, end, strideMultiplier);
+
+			// Check for any errors launching the kernel
+			cudaStatus = cudaGetLastError();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "bbpKernel launch failed on gpu%d: %s\n", this->gpu, cudaGetErrorString(cudaStatus));
+				goto Error;
+			}
+
+			// cudaDeviceSynchronize waits for the kernel to finish, and returns
+			// any errors encountered during the launch.
+			cudaStatus = cudaDeviceSynchronize();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu %d!\n", cudaStatus, this->gpu);
+				goto Error;
 			}
 
 			//give the rest of the computer some gpu time to reduce system choppiness
