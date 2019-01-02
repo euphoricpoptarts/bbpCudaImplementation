@@ -355,7 +355,7 @@ public:
 			}
 
 			//after ~20,000 launches between all gpus, write data to status buffer for progress thread to save
-			if ((currentLaunch - lastWrite) >= 2000) {
+			if ((currentLaunch - lastWrite) >= 20000) {
 
 				lastWrite = currentLaunch;
 
