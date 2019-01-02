@@ -44,7 +44,7 @@ struct sJ {
 	uint64 s[2] = { 0, 0};
 };
 
-__global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 stride);
+__global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 stride);
 cudaError_t reduceSJ(sJ *c, unsigned int size);
 
 //adds all elements of addend and augend, storing in addend
@@ -83,22 +83,24 @@ public:
 	sJ previousCache;
 	double previousTime;
 	sJ * status;
-	volatile uint64 * nextStrideBegin;
+	std::atomic<uint64> nextStrideBegin;
 	uint64 maxProgress;
 	volatile int quit = 0;
 	cudaError_t error;
 	chr::high_resolution_clock::time_point * begin;
-	volatile std::atomic<int> dataWritten;
+	std::atomic<int> dataWritten;
+	std::atomic<uint64> launchCount;
 
 	progressData(int gpus) {
 		std::atomic_init(&this->dataWritten, 0);
+		std::atomic_init(&this->launchCount, 0);
+		std::atomic_init(&this->nextStrideBegin, 0);
 
 		//these variables are linked between host and device memory allowing each to communicate about progress
 		volatile uint64 *currProgHost;
 		uint64 * currProgDevice;
 
 		this->status = new sJ[gpus];
-		this->nextStrideBegin = new uint64[gpus];
 
 		//allow device to map host memory for progress ticker
 		this->error = cudaSetDeviceFlags(cudaDeviceMapHost);
@@ -130,7 +132,6 @@ public:
 
 	~progressData() {
 		delete[] this->status;
-		delete[] this->nextStrideBegin;
 		//TODO: delete the device/host pointers?
 	}
 
@@ -236,43 +237,31 @@ public:
 
 			if (std::atomic_compare_exchange_strong(&this->dataWritten, &expected, 0)) {
 
-				//ensure all sJs in status are from same stride
-				//this should always be the case since each 1000 strides are separated by about 90 seconds currently
-				//it would be very unlikely for one gpu to get 1000 strides ahead of another, unless the GPUs were not the same
-				int sJsAligned = 1;
-				uint64 contProcess = this->nextStrideBegin[0];
-				for (int i = 1; i < totalGpus; i++) sJsAligned &= (this->nextStrideBegin[i] == contProcess);
+				uint64 contProcess = this->nextStrideBegin;
 
-				if (sJsAligned) {
+				char buffer[100];
 
-					char buffer[100];
+				double savedProgress = (double)(contProcess - 1LLU) / (double)this->maxProgress;
 
-					double savedProgress = (double)(contProcess - 1LLU) / (double)this->maxProgress;
+				snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%09.6f.dat", this->maxProgress, 100.0*savedProgress);
 
-					snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%09.6f.dat", this->maxProgress, 100.0*savedProgress);
-
-					//would like to do this with ofstream and std::hexfloat
-					//but msvc is a microsoft product so...
-					FILE * file;
-					file = fopen(buffer, "w+");
-					if (file != NULL) {
-						printf("Writing data to disk\n");
-						fprintf(file, "%llu\n", contProcess);
-						fprintf(file, "%a\n", time);
-						sJ currStatus = this->previousCache;
-						for (int i = 0; i < totalGpus; i++) {
-							sJAdd(&currStatus, this->status + i);
-						}
-						for (int i = 0; i < 2; i++) fprintf(file, "%llX\n", currStatus.s[i]);
-						fclose(file);
+				//would like to do this with ofstream and std::hexfloat
+				//but msvc is a microsoft product so...
+				FILE * file;
+				file = fopen(buffer, "w+");
+				if (file != NULL) {
+					printf("Writing data to disk\n");
+					fprintf(file, "%llu\n", contProcess);
+					fprintf(file, "%a\n", time);
+					sJ currStatus = this->previousCache;
+					for (int i = 0; i < totalGpus; i++) {
+						sJAdd(&currStatus, this->status + i);
 					}
-					else {
-						fprintf(stderr, "Error opening file %s\n", buffer);
-					}
+					for (int i = 0; i < 2; i++) fprintf(file, "%llX\n", currStatus.s[i]);
+					fclose(file);
 				}
 				else {
-					fprintf(stderr, "sJs are misaligned, could not write to disk!\n");
-					for (int i = 0; i < totalGpus; i++) fprintf(stderr, "sJ %d alignment is %llu\n", i, this->nextStrideBegin[i]);
+					fprintf(stderr, "Error opening file %s\n", buffer);
 				}
 			}
 
@@ -310,7 +299,9 @@ public:
 
 		cudaError_t cudaStatus;
 
-		uint64 stride, launchWidth, neededLaunches;
+		uint64 launchWidth, neededLaunches, currentLaunch;
+
+		uint64 lastWrite = 0;
 
 		// Choose which GPU to run on, change this on a multi-GPU system.
 		cudaStatus = cudaSetDevice(gpu);
@@ -333,23 +324,20 @@ public:
 			goto Error;
 		}
 
-		stride = (uint64)this->size * (uint64)this->totalGpus;
-
-		launchWidth = stride * strideMultiplier;
+		launchWidth = (uint64)this->size * strideMultiplier;
 
 		//need to round up
 		//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
 		//even when digit/launchWidth is an integer, it is necessary to add 1
 		neededLaunches = ((this->data->sumEnd - this->data->beginFrom) / launchWidth) + 1LLU;
+		while ( (currentLaunch = this->prog->launchCount++) < neededLaunches) {
 
-		for (uint64 launch = 0; launch < neededLaunches; launch++) {
-
-			uint64 begin = this->data->beginFrom + (launchWidth * launch);
-			uint64 end = this->data->beginFrom + (launchWidth * (launch + 1)) - 1;
+			uint64 begin = this->data->beginFrom + (launchWidth * currentLaunch);
+			uint64 end = this->data->beginFrom + (launchWidth * (currentLaunch + 1)) - 1;
 			if (end > this->data->sumEnd) end = this->data->sumEnd;
 
 			// Launch a kernel on the GPU with one thread for each element.
-			bbpKernel << <blockCount * 7, threadCountPerBlock >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, this->gpu, begin, end, strideMultiplier);
+			bbpKernel << <blockCount * 7, threadCountPerBlock >> > (dev_c, this->prog->deviceProg, this->data->startingExponent, begin, end, strideMultiplier);
 
 			// Check for any errors launching the kernel
 			cudaStatus = cudaGetLastError();
@@ -366,8 +354,10 @@ public:
 				goto Error;
 			}
 
-			//on every 10000th launch write data to status buffer for progress thread to save
-			if (launch % 10000 == 0 && launch) {
+			//after ~20,000 launches between all gpus, write data to status buffer for progress thread to save
+			if ((currentLaunch - lastWrite) >= 2000) {
+
+				lastWrite = currentLaunch;
 
 				//copy current results into temp array to reduce and update status
 				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ) * 7, cudaMemcpyDeviceToDevice);
@@ -390,8 +380,12 @@ public:
 				}
 
 				this->prog->status[this->gpu] = c[0];
-				this->prog->nextStrideBegin[this->gpu] = this->data->beginFrom + (launchWidth * (launch + 1LLU));
-				std::atomic_fetch_add(&this->prog->dataWritten, 1);
+
+				//set nextStrideBegin to max of its current value or end + 1
+				uint64 expected = this->prog->nextStrideBegin;
+				while(!this->prog->nextStrideBegin.compare_exchange_strong(expected, std::max(expected, end + 1)));
+
+				this->prog->dataWritten++;
 			}
 
 			//give the rest of the computer some gpu time to reduce system choppiness
@@ -695,12 +689,10 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 //determine from thread and block position which parts of summation to calculate
 //only one of the threads per kernel (AND ONLY ON GPU0) will report progress
 //stride over all parts of summation in bbp formula where k <= startingExponent (between all threads of all launches)
-__global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, int gpuNum, uint64 begin, uint64 end, uint64 strideMultiplier)
+__global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 strideMultiplier)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
-	uint64 start = begin + ((gridId + blockDim.x * gridDim.x * gpuNum) / 7)*strideMultiplier;
-	
-	int progressCheck = gridId + blockDim.x * gridDim.x * gpuNum;
+	uint64 start = begin + (gridId / 7)*strideMultiplier;
 	uint64 mod = 0, modCoefficient = 4;
 	end = ullmin(end, start + strideMultiplier - 1);
 	int negative = end & 1;
@@ -742,7 +734,7 @@ __global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, int 
 		modCoefficient = 10;
 		startingExponent -= 8;
 	}
-	bbp(startingExponent, start, end, strideMultiplier, mod, modCoefficient, negative, c + gridId, progress, !!progressCheck);
+	bbp(startingExponent, start, end, strideMultiplier, mod, modCoefficient, negative, c + gridId, progress, !!gridId);
 }
 
 //stride over current leaves of reduce tree
