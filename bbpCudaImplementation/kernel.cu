@@ -381,7 +381,7 @@ public:
 
 				this->prog->status[this->gpu] = c[0];
 
-				//set nextStrideBegin to max of its current value or end + 1
+				//set nextStrideBegin to max of its current value and end + 1
 				uint64 expected = this->prog->nextStrideBegin;
 				while(!this->prog->nextStrideBegin.compare_exchange_strong(expected, std::max(expected, end + 1)));
 
