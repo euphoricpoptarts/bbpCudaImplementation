@@ -817,6 +817,7 @@ int benchmark() {
 	for (blockCount = startBlocks; blockCount <= (startBlocks + incrementLimit*blocksIncrement); blockCount += blocksIncrement) {
 		double total = 0.0;
 		for (int j = 0; j < numRuns; j++) {
+			prog.launchCount = 0;
 			chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
 			gpuData.size = threadCountPerBlock * blockCount;
 			gpuData.launch();
