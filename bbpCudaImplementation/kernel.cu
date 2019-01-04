@@ -8,6 +8,7 @@
 #include <chrono>
 #include <thread>
 #include <deque>
+#include <mutex>
 #include <atomic>
 #include <iostream>
 #ifdef __linux__
@@ -83,25 +84,23 @@ public:
 	uint64 * deviceProg;
 	sJ previousCache;
 	double previousTime;
-	sJ * status;
-	std::atomic<uint64> nextStrideBegin;
+	std::deque<std::pair<sJ, uint64>> * currentResult;
 	uint64 maxProgress;
 	volatile int quit = 0;
 	cudaError_t error;
 	chr::high_resolution_clock::time_point * begin;
-	std::atomic<int> dataWritten;
+	std::mutex * queueMtx;
 	std::atomic<uint64> launchCount;
 
 	progressData(int gpus) {
-		std::atomic_init(&this->dataWritten, 0);
 		std::atomic_init(&this->launchCount, 0);
-		std::atomic_init(&this->nextStrideBegin, 0);
 
 		//these variables are linked between host and device memory allowing each to communicate about progress
 		volatile uint64 *currProgHost;
 		uint64 * currProgDevice;
 
-		this->status = new sJ[gpus];
+		this->currentResult = new std::deque<std::pair<sJ, uint64>>[gpus];
+		this->queueMtx = new std::mutex[gpus];
 
 		//allow device to map host memory for progress ticker
 		this->error = cudaSetDeviceFlags(cudaDeviceMapHost);
@@ -132,7 +131,8 @@ public:
 	}
 
 	~progressData() {
-		delete[] this->status;
+		delete[] this->currentResult;
+		delete[] this->queueMtx;
 		//TODO: delete the device/host pointers?
 	}
 
@@ -234,11 +234,13 @@ public:
 				printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond, time);
 			}
 
-			int expected = totalGpus;
+			bool resultsReady = true;
 
-			if (std::atomic_compare_exchange_strong(&this->dataWritten, &expected, 0)) {
+			for (int i = 0; i < totalGpus; i++) resultsReady = resultsReady && (this->currentResult[i].size() > 0);
 
-				uint64 contProcess = this->nextStrideBegin;
+			if (resultsReady) {
+
+				uint64 contProcess = this->currentResult[0].front().second;
 
 				char buffer[100];
 
@@ -256,7 +258,10 @@ public:
 					fprintf(file, "%a\n", time);
 					sJ currStatus = this->previousCache;
 					for (int i = 0; i < totalGpus; i++) {
-						sJAdd(&currStatus, this->status + i);
+						this->queueMtx[i].lock();
+						sJAdd(&currStatus, &this->currentResult[i].front().first);
+						this->currentResult[i].pop_front();
+						this->queueMtx[i].unlock();
 					}
 					for (int i = 0; i < 2; i++) fprintf(file, "%llX\n", currStatus.s[i]);
 					fclose(file);
@@ -362,10 +367,9 @@ public:
 					goto Error;
 				}
 
-				this->prog->status[this->gpu] = c[0];
-				this->prog->nextStrideBegin = this->data->beginFrom + (launchWidth * lastWrite);
-
-				this->prog->dataWritten++;
+				this->prog->queueMtx[this->gpu].lock();
+				this->prog->currentResult[this->gpu].emplace_back(c[0], this->data->beginFrom + (launchWidth * lastWrite));
+				this->prog->queueMtx[this->gpu].unlock();
 			}
 
 			// Launch a kernel on the GPU with one thread for each element.
