@@ -85,7 +85,7 @@ public:
 	sJ previousCache;
 	double previousTime;
 	std::deque<std::pair<sJ, uint64>> * currentResult;
-	uint64 maxProgress;
+	digitData * digit;
 	volatile int quit = 0;
 	cudaError_t error;
 	chr::high_resolution_clock::time_point * begin;
@@ -137,8 +137,8 @@ public:
 	}
 
 	int checkForProgressCache(digitData * data) {
-		this->maxProgress = data->sumEnd;
-		std::string target = "digit" + std::to_string(data->sumEnd) + "Base";
+		this->digit = data;
+		std::string target = "exponent" + std::to_string(this->digit->startingExponent) + "Base";
 		std::string pToFile;
 		std::vector<std::string> matching;
 		int found = 0;
@@ -173,7 +173,7 @@ public:
 
 					int readLines = 0;
 
-					readLines += fscanf(cacheF, "%llu", &data->beginFrom);
+					readLines += fscanf(cacheF, "%llu", &this->digit->beginFrom);
 					readLines += fscanf(cacheF, "%la", &this->previousTime);
 					for (int i = 0; i < 2; i++) readLines += fscanf(cacheF, "%llX", &this->previousCache.s[i]);
 					fclose(cacheF);
@@ -209,7 +209,7 @@ public:
 		int count = 0;
 		while (!this->quit) {
 			count++;
-			double progress = (double)(*(this->currentProgress)) / (double)this->maxProgress;
+			double progress = (double)(*(this->currentProgress)) / (double)this->digit->sumEnd;
 
 			chr::high_resolution_clock::time_point now = chr::high_resolution_clock::now();
 			progressQ.push_front(progress);
@@ -244,9 +244,9 @@ public:
 
 				char buffer[100];
 
-				double savedProgress = (double)(contProcess - 1LLU) / (double)this->maxProgress;
+				double savedProgress = (double)(contProcess - 1LLU) / (double)this->digit->sumEnd;
 
-				snprintf(buffer, sizeof(buffer), "progressCache/digit%lluBase1024Progress%09.6f.dat", this->maxProgress, 100.0*savedProgress);
+				snprintf(buffer, sizeof(buffer), "progressCache/exponent%lluBase2Progress%09.6f.dat", this->digit->startingExponent, 100.0*savedProgress);
 
 				//would like to do this with ofstream and std::hexfloat
 				//but msvc is a microsoft product so...
