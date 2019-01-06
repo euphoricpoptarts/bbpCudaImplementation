@@ -18,6 +18,7 @@
 #endif
 #include <string>
 #include <algorithm>
+#include <csignal>
 
 #define uint32 unsigned int
 #define uint64 unsigned long long
@@ -41,6 +42,7 @@ int numRuns;
 uint64 benchmarkTarget;
 int startBlocks, blocksIncrement, incrementLimit;
 const uint64 cachePeriod = 20000;
+bool stop = false;
 
 struct sJ {
 	uint64 s[2] = { 0, 0};
@@ -48,6 +50,7 @@ struct sJ {
 
 __global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 stride);
 cudaError_t reduceSJ(sJ *c, unsigned int size);
+void sigint_handler(int sig);
 
 //adds all elements of addend and augend, storing in addend
 __device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
@@ -336,7 +339,7 @@ public:
 		//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
 		//even when digit/launchWidth is an integer, it is necessary to add 1
 		neededLaunches = ((this->data->sumEnd - this->data->beginFrom) / launchWidth) + 1LLU;
-		while ( (currentLaunch = this->prog->launchCount++) < neededLaunches) {
+		while ( !stop && ((currentLaunch = this->prog->launchCount++) < neededLaunches )) {
 
 			uint64 begin = this->data->beginFrom + (launchWidth * currentLaunch);
 			uint64 end = this->data->beginFrom + (launchWidth * (currentLaunch + 1)) - 1;
@@ -845,6 +848,8 @@ int main() {
 
 	if (loadProperties()) return 1;
 
+	signal(SIGINT, sigint_handler);
+
 	cudaError_t cudaStatus = cudaGetDeviceCount(&totalGpus);
 
 	if (cudaStatus != cudaSuccess) {
@@ -896,7 +901,7 @@ int main() {
 		cudaStatus = gpuData[i].error;
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaBbpLaunch failed on gpu%d!\n", i);
-			return 1;
+			stop = true;
 		}
 
 		sJ output = gpuData[i].output;
@@ -913,15 +918,17 @@ int main() {
 	delete[] handles;
 	delete[] gpuData;
 
-	//uint64 hexDigit = finalizeDigit(cudaResult, hexDigitPosition);
+	if (!stop) {
 
-	chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
+		chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
 
-	printf("pi at hexadecimal digit %llu is %016llX %016llX\n",
-		hexDigitPosition, cudaResult.s[1], cudaResult.s[0]);
+		printf("pi at hexadecimal digit %llu is %016llX %016llX\n",
+			hexDigitPosition, cudaResult.s[1], cudaResult.s[0]);
 
-	//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
-	printf("Computed in %.8f seconds\n", prog.previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
+		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
+		printf("Computed in %.8f seconds\n", prog.previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
+
+	}
 
 	// cudaDeviceReset must be called before exiting in order for profiling and
 	// tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -931,4 +938,10 @@ int main() {
 	}
 
 	return 0;
+}
+
+void sigint_handler(int sig) {
+	if (sig == SIGINT) {
+		stop = true;
+	}
 }
