@@ -1,6 +1,6 @@
 # bbpCudaImplementation
 
-##Overview
+## Overview
 This project is a CUDA implementation of the Bailey-Borwein-Plouffe formula for calculating hexadecimal digits of pi beginning at a given digit.
 This project currently uses an alternate version of the formula discovered by Fabrice Bellard.
 
@@ -10,7 +10,7 @@ The main thread dispatches an individual thread to control each GPU, and another
 This thread awaits the completion of the GPU threads and then tells the progress tracking thread to stop.
 The user can specify a benchmarking run in the configuration files, which can run a number of trials for a given digit of pi and for a range of block counts.
 
-##Algorithms and Novelty of Implementation
+## Algorithms and Novelty of Implementation
 The algorithm in use has been adapted to closely match the one presented in Daisuke Takahashi's paper: http://plouffe.fr/simon/1-s2.0-S0167819118300334-main.pdf  
 
 This implementation has several algorithmic improvements. The conditional subtractions in montgomery multiplications have been removed. This is consistent with the constraints outlined here: https://pdfs.semanticscholar.org/0e6a/3e8f30b63b556679f5dff2cbfdfe9523f4fa.pdf  
@@ -24,7 +24,7 @@ This allows us to use a number that is either equal or congruent about the modul
 This might not be the best place to discuss exactly how this works, so I might make a blog post about it and link to it from here.
 This improvement increases performance by about 6-8%.
 
-##Configuration
+## Configuration
 application.properties specifies the following:
 line 1: number of sum terms computed by each thread
 line 2: blockCount
@@ -36,7 +36,7 @@ line 7: start of benchmark range (inclusive)
 line 8: amount to increment block count
 line 9: number of times to increment blockCount and rerun benchmark
 
-##Digits Calculated and Times
+## Digits Calculated and Times
 Note that only the first ~25-27 digits of each are correct.
 
 1 Quadrillionth Hex-digit: 8353 CB3F 7F0C 9ACC FA9A A215 F309 DCEE
