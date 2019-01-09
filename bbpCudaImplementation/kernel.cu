@@ -594,7 +594,7 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
 //adds the 128 bit number representing ((2^exp)%mod)/mod to result
-__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 montgomeryStart) {
+__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 montgomeryStart, int shiftToLittleBit) {
 	uint64 output = 1;
 	uint64 mPrime;
 
@@ -616,7 +616,15 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 	output = montgomeryStart;
 
-	int shiftToLittleBit = 63 - __clzll(exp);
+	//62 as opposed to 63 because we are gonna skip a montgomery square
+	shiftToLittleBit -= __clzll(exp);
+
+	//exp is always AT LEAST 64, so shiftToLittleBit is always AT LEAST 5
+	//we are gonna leverage the fact that output is 2 in montgomery space, or congruent to it
+	//therefore doubling it is the same as squaring (haha fuckers), skipping a montgomery squaring
+	//then the obligatory shift by the second most significant bit of exp (yikes!!!)
+	//domain of validity is mod < 2^60 by some fixed amount
+	//output <<= 1 + ((exp >> shiftToLittleBit) & 1);
 
 	while (shiftToLittleBit-- != 0) {
 
@@ -645,12 +653,18 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 //this is possible because montgomery multiplication does not require we know 2^65 % mod exactly, but requires we know a number congruent to 2^65 % mod (as long as this number is less than 2^63)
 //div is inversely proportional to startMod ( div = 2^65 / startMod )
 //montgomeryStart + n*div is < 2*mod for mod > 2^(32.5 + log(n))
-__device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div) {
+__device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 startExp, uint64 endExp, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div, int & shiftToLittleBit) {
 		div = twoTo63Power / startMod;
-		div <<= 1;
-		if (-(div * startMod) > startMod) div++;
-		div <<= 1;
-		if (-(div * startMod) > startMod) div++;
+		int largest4BitsShift = 63 - __clzll(startExp);
+		int loops = 2;
+		if ((startExp >> largest4BitsShift) == (endExp >> largest4BitsShift)) {
+			shiftToLittleBit = 63;
+			loops = 1 + (startExp >> largest4BitsShift);
+		}
+		for (int i = 0; i < loops; i++) {
+			div <<= 1;
+			if (-(div * startMod) > startMod) div++;
+		}
 		montgomeryStart = 0 - (div * startMod);// 2^65 - div*startMod = 2^65 % startMod
 		div *= modCoefficient;
 }
@@ -661,8 +675,9 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 	//find 2 in montgomery space
 	uint64 startMod = modCoefficient * end + startingMod;
 	uint64 montgomeryStart, div;
+	int shiftToLittleBit = 63;
 
-	fastModApproximator(startMod, modCoefficient, montgomeryStart, div);
+	if(startMod > fastModLimit) fastModApproximator(startMod, startingExponent - start*10LLU, startingExponent - end*10LLU, modCoefficient, montgomeryStart, div, shiftToLittleBit);
 	
 	//go backwards so we can add div instead of subtracting it
 	//subtracting produces a likelihood of underflow (whereas addition will not cause overflow for any mod where 2^8 < mod < (2^64 - 2^8) )
@@ -677,7 +692,7 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 			subtractModIfMoreThanMod(montgomeryStart, mod);
 		}
 
-		modExpLeftToRight(exp, mod, output->s, negative, montgomeryStart);
+		modExpLeftToRight(exp, mod, output->s, negative, montgomeryStart, shiftToLittleBit);
 
 		negative ^= 1;
 		montgomeryStart += div;
