@@ -616,15 +616,7 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 
 	output = montgomeryStart;
 
-	//62 as opposed to 63 because we are gonna skip a montgomery square
 	shiftToLittleBit -= __clzll(exp);
-
-	//exp is always AT LEAST 64, so shiftToLittleBit is always AT LEAST 5
-	//we are gonna leverage the fact that output is 2 in montgomery space, or congruent to it
-	//therefore doubling it is the same as squaring (haha fuckers), skipping a montgomery squaring
-	//then the obligatory shift by the second most significant bit of exp (yikes!!!)
-	//domain of validity is mod < 2^60 by some fixed amount
-	//output <<= 1 + ((exp >> shiftToLittleBit) & 1);
 
 	while (shiftToLittleBit-- != 0) {
 
