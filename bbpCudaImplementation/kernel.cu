@@ -655,10 +655,10 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 //montgomeryStart + n*div is < 2*mod for mod > 2^(32.5 + log(n))
 __device__ __noinline__ void fastModApproximator(uint64 startMod, uint64 startExp, uint64 endExp, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div, int & shiftToLittleBit) {
 		div = twoTo63Power / startMod;
-		int largest4BitsShift = 63 - __clzll(startExp);
+		int largest4BitsShift = 60 - __clzll(startExp);
 		int loops = 2;
 		if ((startExp >> largest4BitsShift) == (endExp >> largest4BitsShift)) {
-			shiftToLittleBit = 63;
+			shiftToLittleBit = 60;
 			loops = 1 + (startExp >> largest4BitsShift);
 		}
 		for (int i = 0; i < loops; i++) {
@@ -677,7 +677,7 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 	uint64 montgomeryStart, div;
 	int shiftToLittleBit = 63;
 
-	if(startMod > fastModLimit) fastModApproximator(startMod, startingExponent - start*10LLU, startingExponent - end*10LLU, modCoefficient, montgomeryStart, div, shiftToLittleBit);
+	if(startMod > fastModLimit) fastModApproximator(startMod, startingExponent - 64 - start*10LLU, startingExponent - 64 - end*10LLU, modCoefficient, montgomeryStart, div, shiftToLittleBit);
 	
 	//go backwards so we can add div instead of subtracting it
 	//subtracting produces a likelihood of underflow (whereas addition will not cause overflow for any mod where 2^8 < mod < (2^64 - 2^8) )
