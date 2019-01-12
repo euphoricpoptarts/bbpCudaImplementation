@@ -159,18 +159,8 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 	else q0 = q0 + (q1 >> (shift - 64));
 	q1 >>= shift;
 
-	if (!negative) {
-		result[0] += q0;
-		result[1] += q1;
-		if (result[0] < q0) result[1]++;
-	}
-	else {
-		uint64 check = result[0];
-		result[0] -= q0;
-		result[1] -= q1;
-		if (result[0] > check) result[1]--;
-	}
-
+	if (!negative) add128Bit(result[1], result[0], q1, q0);
+	else sub128Bit(result[1], result[0], q1, q0);
 }
 
 //using left-to-right binary exponentiation
@@ -231,6 +221,10 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 //montgomeryStart + n*div is < 2*mod for mod > 2^( (63 + loops + log(n*modCoefficient) ) / 2)
 __device__ __noinline__ void fastModApproximator(uint64 endMod, uint64 startExp, uint64 endExp, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div, int & shiftToLittleBit, int fasterModViable) {
 		div = twoTo63Power / endMod;
+
+		//selects the most significant four (or five if mod is large enough) bits of startExp and endExp
+		//if these chosen bits match, then these bits are added to loops
+		//this part of the exponent will then be precomputed, so that the modular exponentiation routine may skip these bits
 		int sixty4MinusBitsToCompare = 60;
 		if (fasterModViable) sixty4MinusBitsToCompare = 59;
 		int largest4BitsShift = sixty4MinusBitsToCompare - __clzll(startExp);
@@ -239,6 +233,8 @@ __device__ __noinline__ void fastModApproximator(uint64 endMod, uint64 startExp,
 			shiftToLittleBit = sixty4MinusBitsToCompare;
 			loops = 1 + (startExp >> largest4BitsShift);
 		}
+
+
 		for (int i = 0; i < loops; i++) {
 			div <<= 1;
 			if (-(div * endMod) > endMod) div++;
@@ -250,10 +246,14 @@ __device__ __noinline__ void fastModApproximator(uint64 endMod, uint64 startExp,
 //computes strideMultiplier # of summation terms
 __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 startingMod, uint64 modCoefficient, int negative, sJ* output, uint64* progress) {
 
-	//find 2 in montgomery space
+	//depending on the size of the smallest mod a thread will operate on
+	//these variables determine which optimizations are viable
 	int fastModViable = (modCoefficient * start + startingMod) > fastModLimit;
 	int fasterModViable = (modCoefficient * start + startingMod) > fastModULTRAINSTINCT;
 	uint64 montgomeryStart, div;
+	//shiftToLittleBit is used to find how many total squarings are needed in exponentiation
+	//63 computes all necessary squarings
+	//every 1 less will skip a squaring
 	int shiftToLittleBit = 63;
 
 	if(fastModViable) fastModApproximator(modCoefficient * end + startingMod, startingExponent - 64 - start*10LLU, startingExponent - 64 - end*10LLU, modCoefficient, montgomeryStart, div, shiftToLittleBit, fasterModViable);
@@ -277,10 +277,9 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 		montgomeryStart += div;
 	}
 
+	//send some progress information to the host device
+	//once per 2^16 threads
 	if ((start & 0xffff) == 0) {
-		//printf("%llu\n", exp);
-		//only 1 thread (with gridId 0 on GPU0) ever updates the progress
-		//*progress = end;
 		atomicMax(progress, end);
 	}
 }
