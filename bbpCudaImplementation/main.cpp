@@ -322,6 +322,13 @@ public:
 			uint64 end = this->data->beginFrom + (launchWidth * (currentLaunch + 1)) - 1;
 			if (end > this->data->sumEnd) end = this->data->sumEnd;
 
+			// cudaDeviceSynchronize waits for the kernel to finish, and returns
+			// any errors encountered during the launch.
+			cudaStatus = cudaDeviceSynchronize();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu %d!\n", cudaStatus, this->gpu);
+				goto Error;
+			}
 			//after exactly cachePeriod number of launches since last period between all gpus, write all data computed during and before the period to status buffer for progress thread to save
 			if ((currentLaunch - lastWrite) >= cachePeriod) {
 
@@ -362,18 +369,10 @@ public:
 				goto Error;
 			}
 
-			// cudaDeviceSynchronize waits for the kernel to finish, and returns
-			// any errors encountered during the launch.
-			cudaStatus = cudaDeviceSynchronize();
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu %d!\n", cudaStatus, this->gpu);
-				goto Error;
-			}
-
-			//give the rest of the computer some gpu time to reduce system choppiness
-			if (primaryGpu) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(1));
-			}
+			////give the rest of the computer some gpu time to reduce system choppiness
+			//if (primaryGpu) {
+			//	std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			//}
 		}
 
 		cudaStatus = reduceSJ(dev_c, size * 7);

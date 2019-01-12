@@ -5,7 +5,7 @@
 #define uint32 unsigned int
 #define uint64 unsigned long long
 #define fastModLimit 0xfffffff
-#define fastModULTRAINSTINCT 0x3ffffffffff
+#define fastModULTRAINSTINCT 0x7ffffffffff
 //#define QUINTILLION
 
 __device__  __constant__ const uint64 twoTo63Power = 0x8000000000000000;

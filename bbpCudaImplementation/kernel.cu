@@ -229,9 +229,10 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 //this is possible because montgomery multiplication does not require we know 2^(63 + loops) % mod exactly, but requires we know a number congruent to 2^(63 + loops) % mod (as long as this number is less than 2^63)
 //div is inversely proportional to startMod ( div = 2^(63 + loops) / startMod )
 //montgomeryStart + n*div is < 2*mod for mod > 2^( (63 + loops + log(n*modCoefficient) ) / 2)
-__device__ __noinline__ void fastModApproximator(uint64 endMod, uint64 startExp, uint64 endExp, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div, int & shiftToLittleBit) {
+__device__ __noinline__ void fastModApproximator(uint64 endMod, uint64 startExp, uint64 endExp, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div, int & shiftToLittleBit, int fasterModViable) {
 		div = twoTo63Power / endMod;
 		int sixty4MinusBitsToCompare = 60;
+		if (fasterModViable) sixty4MinusBitsToCompare = 59;
 		int largest4BitsShift = sixty4MinusBitsToCompare - __clzll(startExp);
 		int loops = 2;
 		if ((startExp >> largest4BitsShift) == (endExp >> largest4BitsShift)) {
@@ -251,10 +252,11 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 
 	//find 2 in montgomery space
 	int fastModViable = (modCoefficient * start + startingMod) > fastModLimit;
+	int fasterModViable = (modCoefficient * start + startingMod) > fastModULTRAINSTINCT;
 	uint64 montgomeryStart, div;
 	int shiftToLittleBit = 63;
 
-	if(fastModViable) fastModApproximator(modCoefficient * end + startingMod, startingExponent - 64 - start*10LLU, startingExponent - 64 - end*10LLU, modCoefficient, montgomeryStart, div, shiftToLittleBit);
+	if(fastModViable) fastModApproximator(modCoefficient * end + startingMod, startingExponent - 64 - start*10LLU, startingExponent - 64 - end*10LLU, modCoefficient, montgomeryStart, div, shiftToLittleBit, fasterModViable);
 	
 	//go backwards so we can add div instead of subtracting it
 	//subtracting produces a likelihood of underflow (whereas addition will not cause overflow for any mod where 2^8 < mod < (2^64 - 2^8) )
@@ -289,11 +291,12 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 __global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 strideMultiplier)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
-	uint64 start = begin + (gridId / 7)*strideMultiplier;
+	int divider = (blockDim.x * gridDim.x) / 7;
+	uint64 start = begin + (gridId % divider)*strideMultiplier;
 	uint64 mod = 0, modCoefficient = 4;
 	end = ullmin(end, start + strideMultiplier - 1);
 	int negative = end & 1;
-	switch (gridId % 7) {
+	switch (gridId / divider) {
 	case 0:
 		mod = 1;//4k + 1
 		startingExponent -= 3;
