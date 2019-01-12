@@ -6,6 +6,8 @@
 #include <mutex>
 #include <atomic>
 #include <iostream>
+#include <fstream>
+#include <map>
 #ifdef __linux__
 #include <experimental/filesystem>
 #elif _WIN64
@@ -17,6 +19,18 @@
 #include "kernel.cuh"
 
 namespace chr = std::chrono;
+
+const struct {
+	const std::string STRIDEMULTIPLIER = "strideMultiplier",
+		BLOCKCOUNT = "blockCount",
+		PRIMARYGPU = "primaryGpu",
+		BENCHMARKBLOCKCOUNTS = "benchmarkBlockCounts",
+		BENCHMARKTRIALS = "benchmarkTrials",
+		BENCHMARKTARGET = "benchmarkTarget",
+		BENCHMARKSTARTINGBLOCKCOUNT = "benchmarkStartingBlockCount",
+		BENCHMARKBLOCKCOUNTINCREMENT = "benchmarkBlockCountIncrement",
+		BENCHMARKTOTALINCREMENTS = "benchmarkTotalIncrements";
+} propertyNames;
 
 std::string propertiesFile = "application.properties";
 int totalGpus;
@@ -434,28 +448,53 @@ cudaError_t reduceSJ(sJ *c, unsigned int size) {
 
 int loadProperties() {
 	std::cout << "Loading properties from " << propertiesFile << std::endl;
-	FILE * propF = fopen(propertiesFile.c_str(), "r");
+	std::ifstream propF(propertiesFile, std::ios::in);
 
-	if (propF == NULL) {
-		std::cout << "Could not open " << propertiesFile << "!" << std::endl;
+	if (!propF.is_open()) {
+		std::cerr << "Could not open " << propertiesFile << "!" << std::endl;
 		return 1;
 	}
 
-	int readLines = 0;
+	std::map<std::string, std::string> properties;
 
-	readLines += fscanf(propF, "%llu", &strideMultiplier);
-	readLines += fscanf(propF, "%d", &blockCount);
-	readLines += fscanf(propF, "%d", &primaryGpu);
-	readLines += fscanf(propF, "%d", &benchmarkBlockCounts);
-	readLines += fscanf(propF, "%d", &numRuns);
-	readLines += fscanf(propF, "%llu", &benchmarkTarget);
-	readLines += fscanf(propF, "%d", &startBlocks);
-	readLines += fscanf(propF, "%d", &blocksIncrement);
-	readLines += fscanf(propF, "%d", &incrementLimit);
-	if (readLines != 9) {
-		std::cout << "Properties loading failed!" << std::endl;
-		return 1;
+	while (!propF.eof()) {
+		std::string propertyName, propertyValue;
+		propF >> propertyName >> propertyValue;
+		properties.emplace(propertyName, propertyValue);
 	}
+
+	propF.close();
+
+	std::string checkProps[9] = {
+		propertyNames.STRIDEMULTIPLIER,
+		propertyNames.BLOCKCOUNT,
+		propertyNames.PRIMARYGPU,
+		propertyNames.BENCHMARKBLOCKCOUNTS,
+		propertyNames.BENCHMARKTRIALS,
+		propertyNames.BENCHMARKTARGET,
+		propertyNames.BENCHMARKSTARTINGBLOCKCOUNT,
+		propertyNames.BENCHMARKBLOCKCOUNTINCREMENT,
+		propertyNames.BENCHMARKTOTALINCREMENTS
+	};
+
+	int missedProps = 0;
+	for (auto prop : checkProps) {
+		if (properties.find(prop) == properties.end()) {
+			std::cerr << "Property " << prop << " was not found!" << std::endl;
+			missedProps++;
+		}
+	}
+	if (missedProps) return 1;
+
+	strideMultiplier = std::stoull(properties.at(propertyNames.STRIDEMULTIPLIER));
+	blockCount = std::stoi(properties.at(propertyNames.BLOCKCOUNT));
+	primaryGpu = std::stoi(properties.at(propertyNames.PRIMARYGPU));
+	benchmarkBlockCounts = std::stoi(properties.at(propertyNames.BENCHMARKBLOCKCOUNTS));
+	numRuns = std::stoi(properties.at(propertyNames.BENCHMARKTRIALS));
+	benchmarkTarget = std::stoull(properties.at(propertyNames.BENCHMARKTARGET));
+	startBlocks = std::stoi(properties.at(propertyNames.BENCHMARKSTARTINGBLOCKCOUNT));
+	blocksIncrement = std::stoi(properties.at(propertyNames.BENCHMARKBLOCKCOUNTINCREMENT));
+	incrementLimit = std::stoi(properties.at(propertyNames.BENCHMARKTOTALINCREMENTS));
 
 	return 0;
 }
