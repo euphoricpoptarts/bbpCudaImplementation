@@ -23,6 +23,7 @@ namespace chr = std::chrono;
 const struct {
 	const std::string STRIDEMULTIPLIER = "strideMultiplier",
 		BLOCKCOUNT = "blockCount",
+		SEGMENTS = "totalSegments",
 		PRIMARYGPU = "primaryGpu",
 		BENCHMARKBLOCKCOUNTS = "benchmarkBlockCounts",
 		BENCHMARKTRIALS = "benchmarkTrials",
@@ -45,6 +46,7 @@ int numRuns;
 uint64 benchmarkTarget;
 int startBlocks, blocksIncrement, incrementLimit;
 const uint64 cachePeriod = 20000;
+uint64 segments = 1;
 bool stop = false;
 void sigint_handler(int sig);
 
@@ -54,9 +56,9 @@ class digitData {
 public:
 	uint64 sumEnd = 0;
 	uint64 startingExponent = 0;
-	uint64 beginFrom = 0;
+	uint64 sumBegin = 0;
 
-	digitData(uint64 digitInput) {
+	digitData(uint64 digitInput, uint64 segments, uint64 segmentNumber) {
 		//subtract 1 to convert to 0-indexed
 		digitInput--;
 
@@ -64,11 +66,27 @@ public:
 		//adding 128 for fixed-point division algorithm
 		//adding 8 for maximum size of coefficient (so that all coefficients can be expressed by subtracting an integer from the exponent)
 		//subtracting 6 for the division by 64 of the whole sum
-		this->startingExponent = (4LLU * digitInput) + 128LLU + 2LLU;
+		this->startingExponent = (4LLU * digitInput) + 128LLU + 8LLU - 6LLU;
 
-		//the end of the sum does not have the addition by 8 so that all calculations will be a positive exponent of 2 after factoring in the coefficient
+		//represents the ending index of the entire summation
+		//does not include addition by 8 used above so that all nominators of summation will be a positive exponent of 2 after factoring in the coefficient
 		//this leaves out a couple potentially positive exponents of 2 (could potentially just check subtraction in modExpLeftToRight and keep the addition by 8)
-		this->sumEnd = (4LLU * digitInput - 6LLU + 128LLU) / 10LLU;
+		uint64 endIndexOfSum = (4LLU * digitInput - 6LLU + 128LLU) / 10LLU;
+
+		//as the range of the summation is [0, sumEnd], the count of total terms is sumEnd + 1
+		//always round up even endIndex is an integral multiple of segments
+		uint64 segmentWidth = (endIndexOfSum / segments) + 1;
+
+		//term to begin summation from
+		this->sumBegin = segmentWidth * segmentNumber;
+
+		//subtract 1 as we do not want to include the beginning of next segment
+		this->sumEnd = segmentWidth * (segmentNumber + 1) - 1;
+
+		this->sumEnd = std::min(this->sumEnd, endIndexOfSum);
+
+		std::cout << "sumBegin = " << this->sumBegin << std::endl;
+		std::cout << "sumEnd = " << this->sumEnd << std::endl;
 	}
 };
 
@@ -167,7 +185,7 @@ public:
 
 					int readLines = 0;
 
-					readLines += fscanf(cacheF, "%llu", &this->digit->beginFrom);
+					readLines += fscanf(cacheF, "%llu", &this->digit->sumBegin);
 					readLines += fscanf(cacheF, "%la", &this->previousTime);
 					for (int i = 0; i < 2; i++) readLines += fscanf(cacheF, "%llX", &this->previousCache.s[i]);
 					fclose(cacheF);
@@ -329,11 +347,11 @@ public:
 		//need to round up
 		//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
 		//even when digit/launchWidth is an integer, it is necessary to add 1
-		neededLaunches = ((this->data->sumEnd - this->data->beginFrom) / launchWidth) + 1LLU;
+		neededLaunches = ((this->data->sumEnd - this->data->sumBegin) / launchWidth) + 1LLU;
 		while (!stop && ((currentLaunch = this->prog->launchCount++) < neededLaunches)) {
 
-			uint64 begin = this->data->beginFrom + (launchWidth * currentLaunch);
-			uint64 end = this->data->beginFrom + (launchWidth * (currentLaunch + 1)) - 1;
+			uint64 begin = this->data->sumBegin + (launchWidth * currentLaunch);
+			uint64 end = this->data->sumBegin + (launchWidth * (currentLaunch + 1)) - 1;
 			if (end > this->data->sumEnd) end = this->data->sumEnd;
 
 			// cudaDeviceSynchronize waits for the kernel to finish, and returns
@@ -369,7 +387,7 @@ public:
 				}
 
 				this->prog->queueMtx[this->gpu].lock();
-				this->prog->currentResult[this->gpu].emplace_back(c[0], this->data->beginFrom + (launchWidth * lastWrite));
+				this->prog->currentResult[this->gpu].emplace_back(c[0], this->data->sumBegin + (launchWidth * lastWrite));
 				this->prog->queueMtx[this->gpu].unlock();
 			}
 
@@ -465,7 +483,7 @@ int loadProperties() {
 
 	propF.close();
 
-	std::string checkProps[9] = {
+	std::string checkProps[10] = {
 		propertyNames.STRIDEMULTIPLIER,
 		propertyNames.BLOCKCOUNT,
 		propertyNames.PRIMARYGPU,
@@ -474,7 +492,8 @@ int loadProperties() {
 		propertyNames.BENCHMARKTARGET,
 		propertyNames.BENCHMARKSTARTINGBLOCKCOUNT,
 		propertyNames.BENCHMARKBLOCKCOUNTINCREMENT,
-		propertyNames.BENCHMARKTOTALINCREMENTS
+		propertyNames.BENCHMARKTOTALINCREMENTS,
+		propertyNames.SEGMENTS
 	};
 
 	int missedProps = 0;
@@ -495,12 +514,14 @@ int loadProperties() {
 	startBlocks = std::stoi(properties.at(propertyNames.BENCHMARKSTARTINGBLOCKCOUNT));
 	blocksIncrement = std::stoi(properties.at(propertyNames.BENCHMARKBLOCKCOUNTINCREMENT));
 	incrementLimit = std::stoi(properties.at(propertyNames.BENCHMARKTOTALINCREMENTS));
+	segments = std::stoull(properties.at(propertyNames.SEGMENTS));
+	if (segments == 0) segments = 1;
 
 	return 0;
 }
 
 int benchmark() {
-	digitData data(benchmarkTarget);
+	digitData data(benchmarkTarget, 1, 1);
 	totalGpus = 1;
 	progressData prog(totalGpus);
 	if (prog.error != cudaSuccess) return 1;
@@ -556,8 +577,15 @@ int main() {
 	uint64 hexDigitPosition;
 	std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
 	std::cin >> hexDigitPosition;
+	
+	uint64 segmentNumber = 0;
+	if (segments > 1) {
+		std::cout << "Input segment number to calculate (1 - " << segments << ")" << std::endl;
+		std::cin >> segmentNumber;
+		segmentNumber--;
+	}
 
-	digitData data(hexDigitPosition);
+	digitData data(hexDigitPosition, segments, segmentNumber);
 
 	std::thread * handles = new std::thread[totalGpus];
 	bbpLauncher * gpuData = new bbpLauncher[totalGpus];
@@ -615,6 +643,18 @@ int main() {
 		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
 		printf("Computed in %.8f seconds\n", prog.previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
 
+		const char * completionPathFormat = "completed/segmented%dExponent%lluSegment%dBase2Complete.dat";
+		char buffer[256];
+		snprintf(buffer, sizeof(buffer), completionPathFormat, segments, data.startingExponent, segmentNumber + 1);
+		FILE * file;
+		file = fopen(buffer, "w+");
+		if (file != NULL) {
+			for (int i = 0; i < 2; i++) fprintf(file, "%016llX\n", cudaResult.s[i]);
+			fclose(file);
+		}
+		else {
+			fprintf(stderr, "Error opening file %s\n", buffer);
+		}
 	}
 
 	// cudaDeviceReset must be called before exiting in order for profiling and
