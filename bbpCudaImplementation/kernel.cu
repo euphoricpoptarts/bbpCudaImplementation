@@ -248,7 +248,9 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 
 	//depending on the size of the smallest mod a thread will operate on
 	//these variables determine which optimizations are viable
-	int fastModViable = (modCoefficient * start + startingMod) > fastModLimit;
+	//need to check that startExp used in fastModApproximator is greater than 64 (compare to 128 because we haven't subtracted 64 yet to prevent underflow)
+	//as startExp must have at least 5 bits for fastModApproximator to work (128 looks sleeker than 96)
+	int fastModViable = (modCoefficient * start + startingMod) > fastModLimit && (startingExponent - start*10LLU) > 128;
 	int fasterModViable = (modCoefficient * start + startingMod) > fastModULTRAINSTINCT;
 	uint64 montgomeryStart, div;
 	//shiftToLittleBit is used to find how many total squarings are needed in exponentiation
@@ -278,8 +280,8 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 	}
 
 	//send some progress information to the host device
-	//once per 2^16 threads
-	if ((start & 0xffff) == 0) {
+	//once per 2^20/strideMultiplier threads
+	if (((end + 1) & 0xfffff) <= (start & 0xfffff) && end > start) {
 		atomicMax(progress, end);
 	}
 }
