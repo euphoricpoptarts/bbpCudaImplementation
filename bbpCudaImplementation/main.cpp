@@ -54,14 +54,22 @@ void sigint_handler(int sig);
 
 cudaError_t reduceSJ(sJ *c, unsigned int size);
 
+//this class contains all needed data to define the work for a given segment of a digit
+//and to synchronize that work between multiple GPUs
 class digitData {
 public:
 	uint64 sumEnd = 0;
 	uint64 startingExponent = 0;
 	uint64 sumBegin = 0;
 	uint64 segmentBegin = 0;
+	std::atomic<uint64> launchCount;
 
 	digitData(uint64 digitInput, uint64 segments, uint64 segmentNumber) {
+
+		//this currently assumes that all launches will be of the same width (which is currently the case)
+		//if in the future I want to change that, this will instead track the next sum term to process and will be initiated to sumBegin
+		std::atomic_init(&this->launchCount, 0);
+
 		//subtract 1 to convert to 0-indexed
 		digitInput--;
 
@@ -77,7 +85,7 @@ public:
 		uint64 endIndexOfSum = (4LLU * digitInput - 6LLU + 128LLU) / 10LLU;
 
 		//as the range of the summation is [0, sumEnd], the count of total terms is sumEnd + 1
-		//we want to find ceil((endIndexOfSum + 1) / segments), this is equivalent to that but requires no floating point data types
+		//need to find ceil((endIndexOfSum + 1) / segments), this is equivalent to that but requires no floating point data types
 		uint64 segmentWidth = (endIndexOfSum / segments) + 1;
 
 		//term to begin summation from
@@ -85,13 +93,15 @@ public:
 		//this is used to compute progress of a segment
 		this->segmentBegin = this->sumBegin;
 
-		//subtract 1 as we do not want to include the beginning of next segment
+		//subtract 1 as the beginning of next segment should not be included
 		this->sumEnd = segmentWidth * (segmentNumber + 1) - 1;
 
 		this->sumEnd = std::min(this->sumEnd, endIndexOfSum);
 	}
 };
 
+//this class facilitates tracking progress for a given segment of a digit
+//including periodic caching to file, and reloading from a cache file
 class progressData {
 public:
 	volatile uint64 * currentProgress;
@@ -104,11 +114,9 @@ public:
 	cudaError_t error;
 	chr::high_resolution_clock::time_point * begin;
 	std::mutex * queueMtx;
-	std::atomic<uint64> launchCount;
 	std::string progressFilenamePrefix;
 
 	progressData(int gpus) {
-		std::atomic_init(&this->launchCount, 0);
 
 		//these variables are linked between host and device memory allowing each to communicate about progress
 		volatile uint64 *currProgHost;
@@ -363,7 +371,7 @@ public:
 		//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
 		//even when digit/launchWidth is an integer, it is necessary to add 1
 		neededLaunches = ((this->data->sumEnd - this->data->sumBegin) / launchWidth) + 1LLU;
-		while (!stop && ((currentLaunch = this->prog->launchCount++) < neededLaunches)) {
+		while (!stop && ((currentLaunch = this->data->launchCount++) < neededLaunches)) {
 
 			uint64 begin = this->data->sumBegin + (launchWidth * currentLaunch);
 			uint64 end = this->data->sumBegin + (launchWidth * (currentLaunch + 1)) - 1;
@@ -547,7 +555,7 @@ int benchmark() {
 	for (blockCount = startBlocks; blockCount <= (startBlocks + incrementLimit * blocksIncrement); blockCount += blocksIncrement) {
 		double total = 0.0;
 		for (int j = 0; j < numRuns; j++) {
-			prog.launchCount = 0;
+			data.launchCount = 0;
 			chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
 			gpuData.size = threadCountPerBlock * blockCount;
 			gpuData.launch();

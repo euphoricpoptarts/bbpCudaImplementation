@@ -39,8 +39,10 @@ benchmarkTotalIncrements: number of times to increment blockCount and rerun benc
 ## Digits Calculated and Times
 Note that only the first ~25-27 digits of each are correct.
 
-1 Quadrillionth Hex-digit: 8353 CB3F 7F0C 9ACC FA9A A215 F309 DCEE  
-Time: 197302.296 seconds (out of date)  
+1 Quadrillionth Hex-digit: 8353 CB3F 7F0C 9ACC FA9A A215 F309 DCF2  
+Note: The final two hex-digits of this computation are not the expected value, due to hardware errors from overclocking.
+These last two digits are beyond the precision limit anyways, so it doesn't really matter.  
+Time: 182652.895 seconds  
 Hardware: 2x RTX 2080 Ti FTW3 (2070 MHz)
 
 100 Trillionth Hex-digit: 0D39 BABA 1B8F ED53 DD5F 8BDE 8266 D47C  
