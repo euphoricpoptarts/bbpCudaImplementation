@@ -6,6 +6,7 @@
 #include <mutex>
 #include <atomic>
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <map>
 #ifdef __linux__
@@ -34,6 +35,7 @@ const struct {
 } propertyNames;
 
 std::string propertiesFile = "application.properties";
+std::string progressFilenamePrefixTemplate = "exponent%lluTotalSegments%lluSegment%lluProgress";
 int totalGpus;
 uint64 strideMultiplier;
 //warpsize is 32 so optimal value is almost certainly a multiple of 32
@@ -57,6 +59,7 @@ public:
 	uint64 sumEnd = 0;
 	uint64 startingExponent = 0;
 	uint64 sumBegin = 0;
+	uint64 segmentBegin = 0;
 
 	digitData(uint64 digitInput, uint64 segments, uint64 segmentNumber) {
 		//subtract 1 to convert to 0-indexed
@@ -74,19 +77,18 @@ public:
 		uint64 endIndexOfSum = (4LLU * digitInput - 6LLU + 128LLU) / 10LLU;
 
 		//as the range of the summation is [0, sumEnd], the count of total terms is sumEnd + 1
-		//always round up even endIndex is an integral multiple of segments
+		//we want to find ceil((endIndexOfSum + 1) / segments), this is equivalent to that but requires no floating point data types
 		uint64 segmentWidth = (endIndexOfSum / segments) + 1;
 
 		//term to begin summation from
 		this->sumBegin = segmentWidth * segmentNumber;
+		//this is used to compute progress of a segment
+		this->segmentBegin = this->sumBegin;
 
 		//subtract 1 as we do not want to include the beginning of next segment
 		this->sumEnd = segmentWidth * (segmentNumber + 1) - 1;
 
 		this->sumEnd = std::min(this->sumEnd, endIndexOfSum);
-
-		std::cout << "sumBegin = " << this->sumBegin << std::endl;
-		std::cout << "sumEnd = " << this->sumEnd << std::endl;
 	}
 };
 
@@ -103,6 +105,7 @@ public:
 	chr::high_resolution_clock::time_point * begin;
 	std::mutex * queueMtx;
 	std::atomic<uint64> launchCount;
+	std::string progressFilenamePrefix;
 
 	progressData(int gpus) {
 		std::atomic_init(&this->launchCount, 0);
@@ -148,16 +151,18 @@ public:
 		//TODO: delete the device/host pointers?
 	}
 
-	int checkForProgressCache(digitData * data) {
+	int checkForProgressCache(digitData * data, uint64 totalSegments, uint64 segment) {
 		this->digit = data;
-		std::string target = "exponent" + std::to_string(this->digit->startingExponent) + "Base";
+		char buffer[256];
+		snprintf(buffer, sizeof(buffer), progressFilenamePrefixTemplate.c_str(), this->digit->startingExponent, totalSegments, segment);
+		this->progressFilenamePrefix = buffer;
 		std::string pToFile;
 		std::vector<std::string> matching;
 		int found = 0;
 		for (auto& element : std::experimental::filesystem::directory_iterator("progressCache")) {
 			std::string name = element.path().filename().string();
 			//filename begins with desired string
-			if (name.compare(0, target.length(), target) == 0) {
+			if (name.compare(0, this->progressFilenamePrefix.length(), this->progressFilenamePrefix) == 0) {
 				matching.push_back(element.path().string());
 				found = 1;
 			}
@@ -176,23 +181,23 @@ public:
 				std::cin >> choice;
 				if (choice == 'y') {
 					std::cout << "Loading cache and continuing computation." << std::endl;
-					FILE * cacheF = fopen(pToFile.c_str(), "r");
 
-					if (cacheF == NULL) {
-						std::cout << "Could not open " << pToFile << "!" << std::endl;
+					std::ifstream cacheF(pToFile, std::ios::in);
+
+					if (!cacheF.is_open()) {
+						std::cerr << "Could not open " << pToFile << "!" << std::endl;
 						return 1;
 					}
 
-					int readLines = 0;
+					bool readSuccess = true;
+					readSuccess = readSuccess && (cacheF >> std::dec >> this->digit->sumBegin);
+					readSuccess = readSuccess && (cacheF >> std::hexfloat >> this->previousTime);
+					for (int i = 0; i < 2; i++) readSuccess = readSuccess && (cacheF >> std::hex >> this->previousCache.s[i]);
 
-					readLines += fscanf(cacheF, "%llu", &this->digit->sumBegin);
-					readLines += fscanf(cacheF, "%la", &this->previousTime);
-					for (int i = 0; i < 2; i++) readLines += fscanf(cacheF, "%llX", &this->previousCache.s[i]);
-					fclose(cacheF);
-					//4 lines of data should have been read, 1 continuation point, 1 time, and 2 data points
-					if (readLines != 4) {
-						std::cout << "Data reading failed!" << std::endl;
-						return 1;
+					cacheF.close();
+
+					if (!readSuccess) {
+						std::cerr << "Cache reload failed due to improper file formatting!" << std::endl;
 					}
 				}
 				else if (choice == 'n') {
@@ -221,7 +226,14 @@ public:
 		int count = 0;
 		while (!this->quit) {
 			count++;
-			double progress = (double)(*(this->currentProgress)) / (double)this->digit->sumEnd;
+
+			uint64 readCurrent = *(this->currentProgress);
+
+			//currentProgress is always initialized at zero, so for all segments except the first, a short period exists where currentProgress is less than segmentBegin
+			//potentially could initialize that memory to segmentBegin instead, but this is simpler (though less efficient) than a cudaMemcopy
+			readCurrent = std::max(readCurrent, this->digit->segmentBegin);
+
+			double progress = (double)(readCurrent - this->digit->segmentBegin) / (double)(this->digit->sumEnd - this->digit->segmentBegin);
 
 			chr::high_resolution_clock::time_point now = chr::high_resolution_clock::now();
 			progressQ.push_front(progress);
@@ -254,20 +266,23 @@ public:
 
 				uint64 contProcess = this->currentResult[0].front().second;
 
-				char buffer[100];
+				char buffer[256];
 
-				double savedProgress = (double)(contProcess - 1LLU) / (double)this->digit->sumEnd;
+				//minus 1 because cache range is [segmentBegin, contProcess)
+				double savedProgress = (double)(contProcess - 1LLU - this->digit->segmentBegin) / (double)(this->digit->sumEnd - this->digit->segmentBegin);
 
-				snprintf(buffer, sizeof(buffer), "progressCache/exponent%lluBase2Progress%09.6f.dat", this->digit->startingExponent, 100.0*savedProgress);
+				snprintf(buffer, sizeof(buffer), "progressCache/%s%09.6f.dat", this->progressFilenamePrefix.c_str(), 100.0*savedProgress);
 
 				//would like to do this with ofstream and std::hexfloat
 				//but msvc is a microsoft product so...
-				FILE * file;
-				file = fopen(buffer, "w+");
-				if (file != NULL) {
+
+				std::ofstream cacheF(buffer, std::ios::out);
+				if (cacheF.is_open()) {
 					printf("Writing data to disk\n");
-					fprintf(file, "%llu\n", contProcess);
-					fprintf(file, "%a\n", time);
+					cacheF << contProcess << std::endl;
+					//setprecision is required by msvc++ to output full precision doubles in hex
+					//although the documentation of hexfloat clearly specifies hexfloat should ignore setprecision https://en.cppreference.com/w/cpp/io/manip/fixed
+					cacheF << std::setprecision(13) << std::hexfloat << time << std::endl;
 					sJ currStatus = this->previousCache;
 					for (int i = 0; i < totalGpus; i++) {
 						this->queueMtx[i].lock();
@@ -275,8 +290,8 @@ public:
 						this->currentResult[i].pop_front();
 						this->queueMtx[i].unlock();
 					}
-					for (int i = 0; i < 2; i++) fprintf(file, "%llX\n", currStatus.s[i]);
-					fclose(file);
+					for (int i = 0; i < 2; i++) cacheF << std::hex << currStatus.s[i] << std::endl;
+					cacheF.close();
 				}
 				else {
 					fprintf(stderr, "Error opening file %s\n", buffer);
@@ -592,7 +607,7 @@ int main() {
 
 	progressData prog(totalGpus);
 	if (prog.error != cudaSuccess) return 1;
-	if (prog.checkForProgressCache(&data)) return 1;
+	if (prog.checkForProgressCache(&data, segments, segmentNumber + 1LLU)) return 1;
 
 	chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
 	prog.begin = &start;
@@ -646,11 +661,11 @@ int main() {
 		const char * completionPathFormat = "completed/segmented%dExponent%lluSegment%dBase2Complete.dat";
 		char buffer[256];
 		snprintf(buffer, sizeof(buffer), completionPathFormat, segments, data.startingExponent, segmentNumber + 1);
-		FILE * file;
-		file = fopen(buffer, "w+");
-		if (file != NULL) {
-			for (int i = 0; i < 2; i++) fprintf(file, "%016llX\n", cudaResult.s[i]);
-			fclose(file);
+		std::ofstream completedF(buffer, std::ios::out);
+		if (completedF.is_open()) {
+			completedF << std::hex << std::setfill('0') << std::setw(16);
+			for (int i = 0; i < 2; i++) completedF << cudaResult.s[i] << std::endl;
+			completedF.close();
 		}
 		else {
 			fprintf(stderr, "Error opening file %s\n", buffer);
