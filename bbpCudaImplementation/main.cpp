@@ -159,7 +159,7 @@ public:
 		//TODO: delete the device/host pointers?
 	}
 
-	int checkForProgressCache(digitData * data, uint64 totalSegments, uint64 segment) {
+	int checkForProgressCache(digitData * data, uint64 totalSegments, uint64 segment, int reloadChoice) {
 		this->digit = data;
 		char buffer[256];
 		snprintf(buffer, sizeof(buffer), progressFilenamePrefixTemplate.c_str(), this->digit->startingExponent, totalSegments, segment);
@@ -180,50 +180,60 @@ public:
 			std::sort(matching.begin(), matching.end());
 			pToFile = matching.back();
 
-			int chosen = 0;
-			while (!chosen) {
-				chosen = 1;
-				std::cout << "A cache of a previous computation for this digit exists." << std::endl;
-				std::cout << "Would you like to reload the most recent cache (" << pToFile << ")? y\\n" << std::endl;
-				char choice;
-				std::cin >> choice;
-				if (choice == 'y') {
-					std::cout << "Loading cache and continuing computation." << std::endl;
-
-					std::ifstream cacheF(pToFile, std::ios::in);
-
-					if (!cacheF.is_open()) {
-						std::cerr << "Could not open " << pToFile << "!" << std::endl;
-						return 1;
+			if (reloadChoice == 0) {
+				int chosen = 0;
+				while (!chosen) {
+					chosen = 1;
+					std::cout << "A cache of a previous computation for this digit exists." << std::endl;
+					std::cout << "Would you like to reload the most recent cache (" << pToFile << ")? y\\n" << std::endl;
+					char choice;
+					std::cin >> choice;
+					if (choice == 'y') {}
+					else if (choice == 'n') {
+						std::cout << "Beginning computation without reloading." << std::endl;
+						return 0;
 					}
-
-					bool readSuccess = true;
-					readSuccess = readSuccess && (cacheF >> std::dec >> this->digit->sumBegin);
-					readSuccess = readSuccess && (cacheF >> std::hexfloat >> this->previousTime);
-					for (int i = 0; i < 2; i++) readSuccess = readSuccess && (cacheF >> std::hex >> this->previousCache.s[i]);
-
-					cacheF.close();
-
-					if (!readSuccess) {
-						std::cerr << "Cache reload failed due to improper file formatting!" << std::endl;
+					else {
+						std::cout << "Invalid input" << std::endl;
+						// Ignore to the end of line
+						std::cin.clear();
+						std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+						chosen = 0;
 					}
-				}
-				else if (choice == 'n') {
-					std::cout << "Beginning computation without reloading." << std::endl;
-				}
-				else {
-					std::cout << "Invalid input" << std::endl;
-					// Ignore to the end of line
-					std::cin.clear();
-					std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-					chosen = 0;
 				}
 			}
+			else if (reloadChoice == 2) {
+				return 0;
+			}
+			reloadFromCache(pToFile);
 		}
 		else {
 			std::cout << "No progress cache file found. Beginning computation without reloading." << std::endl;
 		}
 		return 0;
+	}
+
+	int reloadFromCache(std::string pToFile) {
+		std::cout << "Loading cache and continuing computation." << std::endl;
+
+		std::ifstream cacheF(pToFile, std::ios::in);
+
+		if (!cacheF.is_open()) {
+			std::cerr << "Could not open " << pToFile << "!" << std::endl;
+			return 1;
+		}
+
+		bool readSuccess = true;
+		readSuccess = readSuccess && (cacheF >> std::dec >> this->digit->sumBegin);
+		readSuccess = readSuccess && (cacheF >> std::hexfloat >> this->previousTime);
+		for (int i = 0; i < 2; i++) readSuccess = readSuccess && (cacheF >> std::hex >> this->previousCache.s[i]);
+
+		cacheF.close();
+
+		if (!readSuccess) {
+			std::cerr << "Cache reload failed due to improper file formatting!" << std::endl;
+			return 1;
+		}
 	}
 
 	//this function is meant to be run by an independent thread to output progress to the console
@@ -237,9 +247,10 @@ public:
 
 			uint64 readCurrent = *(this->currentProgress);
 
-			//currentProgress is always initialized at zero, so for all segments except the first, a short period exists where currentProgress is less than segmentBegin
-			//potentially could initialize that memory to segmentBegin instead, but this is simpler (though less efficient) than a cudaMemcopy
-			readCurrent = std::max(readCurrent, this->digit->segmentBegin);
+			//currentProgress is always initialized at zero
+			//when progress is reloaded or a segment after the first is started
+			//the minimum for current progress should be the point from which progress was reloaded or the beginning of the segment, respectively
+			readCurrent = std::max(readCurrent, this->digit->sumBegin);
 
 			double progress = (double)(readCurrent - this->digit->segmentBegin) / (double)(this->digit->sumEnd - this->digit->segmentBegin);
 
@@ -575,7 +586,7 @@ int benchmark() {
 	return 0;
 }
 
-int main() {
+int main(int argc, char** argv) {
 
 	if (loadProperties()) return 1;
 
@@ -598,13 +609,22 @@ int main() {
 
 	const int arraySize = threadCountPerBlock * blockCount;
 	uint64 hexDigitPosition;
-	std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
-	std::cin >> hexDigitPosition;
+	if (argc == 1) {
+		std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
+		std::cin >> hexDigitPosition;
+	}
+	else {
+		hexDigitPosition = std::stoull(argv[1]);
+	}
 	
 	uint64 segmentNumber = 0;
-	if (segments > 1) {
+	if (argc < 3 && segments > 1) {
 		std::cout << "Input segment number to calculate (1 - " << segments << ")" << std::endl;
 		std::cin >> segmentNumber;
+		segmentNumber--;
+	}
+	else if(segments > 1) {
+		segmentNumber = std::stoull(argv[2]);
 		segmentNumber--;
 	}
 
@@ -613,9 +633,20 @@ int main() {
 	std::thread * handles = new std::thread[totalGpus];
 	bbpLauncher * gpuData = new bbpLauncher[totalGpus];
 
+	int reloadChoice = 0;
+	if (argc >= 4) {
+		std::string reloadChoiceString = argv[3];
+		if (reloadChoiceString.compare("y") == 0) {
+			reloadChoice = 1;
+		}
+		else if (reloadChoiceString.compare("n") == 0) {
+			reloadChoice = 2;
+		}
+	}
+
 	progressData prog(totalGpus);
 	if (prog.error != cudaSuccess) return 1;
-	if (prog.checkForProgressCache(&data, segments, segmentNumber + 1LLU)) return 1;
+	if (prog.checkForProgressCache(&data, segments, segmentNumber + 1LLU, reloadChoice)) return 1;
 
 	chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
 	prog.begin = &start;
