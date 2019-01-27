@@ -708,8 +708,8 @@ int main(int argc, char** argv) {
 		snprintf(buffer, sizeof(buffer), completionPathFormat, segments, data.startingExponent, segmentNumber + 1);
 		std::ofstream completedF(buffer, std::ios::out);
 		if (completedF.is_open()) {
-			completedF << std::hex << std::setfill('0') << std::setw(16);
-			for (int i = 0; i < 2; i++) completedF << cudaResult.s[i] << std::endl;
+			completedF << std::hex << std::setfill('0');
+			for (int i = 0; i < 2; i++) completedF << std::setw(16) << cudaResult.s[i] << std::endl;
 			completedF << std::hexfloat << std::setprecision(13) << totalTime << std::endl;
 			completedF.close();
 		}
