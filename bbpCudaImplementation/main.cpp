@@ -234,6 +234,7 @@ public:
 			std::cerr << "Cache reload failed due to improper file formatting!" << std::endl;
 			return 1;
 		}
+		return 0;
 	}
 
 	//this function is meant to be run by an independent thread to output progress to the console
@@ -616,15 +617,19 @@ int main(int argc, char** argv) {
 	else {
 		hexDigitPosition = std::stoull(argv[1]);
 	}
+
+	if (argc >= 3) {
+		segments = std::stoull(argv[2]);
+	}
 	
 	uint64 segmentNumber = 0;
-	if (argc < 3 && segments > 1) {
+	if (argc < 4 && segments > 1) {
 		std::cout << "Input segment number to calculate (1 - " << segments << ")" << std::endl;
 		std::cin >> segmentNumber;
 		segmentNumber--;
 	}
 	else if(segments > 1) {
-		segmentNumber = std::stoull(argv[2]);
+		segmentNumber = std::stoull(argv[3]);
 		segmentNumber--;
 	}
 
@@ -634,8 +639,8 @@ int main(int argc, char** argv) {
 	bbpLauncher * gpuData = new bbpLauncher[totalGpus];
 
 	int reloadChoice = 0;
-	if (argc >= 4) {
-		std::string reloadChoiceString = argv[3];
+	if (argc >= 5) {
+		std::string reloadChoiceString = argv[4];
 		if (reloadChoiceString.compare("y") == 0) {
 			reloadChoice = 1;
 		}
@@ -695,7 +700,8 @@ int main(int argc, char** argv) {
 			hexDigitPosition, cudaResult.s[1], cudaResult.s[0]);
 
 		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
-		printf("Computed in %.8f seconds\n", prog.previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count());
+		double totalTime = prog.previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count();
+		printf("Computed in %.8f seconds\n", totalTime);
 
 		const char * completionPathFormat = "completed/segmented%dExponent%lluSegment%dBase2Complete.dat";
 		char buffer[256];
@@ -704,11 +710,15 @@ int main(int argc, char** argv) {
 		if (completedF.is_open()) {
 			completedF << std::hex << std::setfill('0') << std::setw(16);
 			for (int i = 0; i < 2; i++) completedF << cudaResult.s[i] << std::endl;
+			completedF << std::hexfloat << std::setprecision(13) << totalTime << std::endl;
 			completedF.close();
 		}
 		else {
 			fprintf(stderr, "Error opening file %s\n", buffer);
 		}
+	}
+	else {
+		std::cout << "Quitting upon user exit command!" << std::endl;
 	}
 
 	// cudaDeviceReset must be called before exiting in order for profiling and

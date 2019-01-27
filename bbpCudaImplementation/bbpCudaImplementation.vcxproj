@@ -88,7 +88,7 @@
       <Runtime>InheritFromHost</Runtime>
       <NvccCompilation>compile</NvccCompilation>
       <InterleaveSourceInPTX>true</InterleaveSourceInPTX>
-      <CodeGeneration>compute_75,sm_75</CodeGeneration>
+      <CodeGeneration>compute_60,sm_60</CodeGeneration>
     </CudaCompile>
     <CudaLink>
       <Optimization>O3</Optimization>
