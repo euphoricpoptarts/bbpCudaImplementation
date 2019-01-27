@@ -426,7 +426,7 @@ public:
 				this->prog->queueMtx[this->gpu].unlock();
 			}
 
-			// Launch a kernel on the GPU with one thread for each element.
+			// calls the bbpKernel to compute a portion of the total bbp sum on the GPU
 			bbpPassThrough(threadCountPerBlock, blockCount * 7, dev_c, this->prog->deviceProg, this->data->startingExponent, begin, end, strideMultiplier);
 
 			// Check for any errors launching the kernel
