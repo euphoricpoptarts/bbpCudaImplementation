@@ -24,7 +24,6 @@ namespace chr = std::chrono;
 const struct {
 	const std::string STRIDEMULTIPLIER = "strideMultiplier",
 		BLOCKCOUNT = "blockCount",
-		SEGMENTS = "totalSegments",
 		PRIMARYGPU = "primaryGpu",
 		BENCHMARKBLOCKCOUNTS = "benchmarkBlockCounts",
 		BENCHMARKTRIALS = "benchmarkTrials",
@@ -53,6 +52,78 @@ bool stop = false;
 void sigint_handler(int sig);
 
 cudaError_t reduceSJ(sJ *c, unsigned int size);
+
+class commandLineArgsLoader {
+
+	bool digitGiven;
+	uint64 givenDigit;
+	uint64 segments;
+	uint64 segmentNumber;
+	int reloadChoice;
+
+public:
+	commandLineArgsLoader(int argc, char** argv) {
+		this->givenDigit = 0;
+		this->digitGiven = false;
+		if(argc >= 2) {
+			this->givenDigit = std::stoull(argv[1]);
+			this->digitGiven = true;
+		}
+		this->segments = 0;
+		if (argc >= 3) {
+			this->segments = std::stoull(argv[2]);
+		}
+		this->segmentNumber = 0;
+		if(argc >= 4 && segments > 1) {
+			this->segmentNumber = std::stoull(argv[3]);
+		}
+		reloadChoice = 0;
+		if(argc >= 5) {
+			std::string reloadChoiceString = argv[4];
+			if (reloadChoiceString.compare("y") == 0) {
+				this->reloadChoice = 1;
+			}
+			else if (reloadChoiceString.compare("n") == 0) {
+				this->reloadChoice = 2;
+			}
+		}
+	}
+
+	uint64 getDigit() {
+		uint64 digit = this->givenDigit;
+		if(!digitGiven) {
+			std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
+			std::cin >> digit;
+		}
+		return digit;
+	}
+
+	uint64 getTotalSegments() {
+		uint64 totalSegments = this->segments;
+		if (totalSegments == 0) {
+			std::cout << "Input number of segments to split computation:" << std::endl;
+			std::cin >> totalSegments;
+			if (totalSegments == 0) totalSegments = 1;
+		}
+		return totalSegments;
+	}
+
+	uint64 getSegmentNumber(uint64 maxSegment) {
+		uint64 number = this->segmentNumber;
+		if (number == 0) {
+			if (maxSegment > 1) {
+				std::cout << "Input segment number to calculate (1 - " << maxSegment << "):" << std::endl;
+				std::cin >> number;
+			}
+			if (number == 0) number = 1;
+		}
+		return number - 1;
+	}
+
+	int getReloadChoice() {
+		return this->reloadChoice;
+	}
+};
 
 //this class contains all needed data to define the work for a given segment of a digit
 //and to synchronize that work between multiple GPUs
@@ -108,6 +179,7 @@ public:
 	uint64 * deviceProg;
 	sJ previousCache;
 	double previousTime;
+	int reloadChoice;
 	std::deque<std::pair<sJ, uint64>> * currentResult;
 	digitData * digit;
 	volatile int quit = 0;
@@ -151,6 +223,11 @@ public:
 		this->deviceProg = currProgDevice;
 		this->currentProgress = currProgHost;
 		this->quit = 0;
+		this->reloadChoice = 0;
+	}
+
+	void setReloadPolicy(int choice) {
+		this->reloadChoice = choice;
 	}
 
 	~progressData() {
@@ -159,7 +236,7 @@ public:
 		//TODO: delete the device/host pointers?
 	}
 
-	int checkForProgressCache(digitData * data, uint64 totalSegments, uint64 segment, int reloadChoice) {
+	int checkForProgressCache(digitData * data, uint64 totalSegments, uint64 segment) {
 		this->digit = data;
 		char buffer[256];
 		snprintf(buffer, sizeof(buffer), progressFilenamePrefixTemplate.c_str(), this->digit->startingExponent, totalSegments, segment);
@@ -180,7 +257,7 @@ public:
 			std::sort(matching.begin(), matching.end());
 			pToFile = matching.back();
 
-			if (reloadChoice == 0) {
+			if (this->reloadChoice == 0) {
 				int chosen = 0;
 				while (!chosen) {
 					chosen = 1;
@@ -202,7 +279,7 @@ public:
 					}
 				}
 			}
-			else if (reloadChoice == 2) {
+			else if (this->reloadChoice == 2) {
 				return 0;
 			}
 			reloadFromCache(pToFile);
@@ -518,7 +595,7 @@ int loadProperties() {
 
 	propF.close();
 
-	std::string checkProps[10] = {
+	std::string checkProps[9] = {
 		propertyNames.STRIDEMULTIPLIER,
 		propertyNames.BLOCKCOUNT,
 		propertyNames.PRIMARYGPU,
@@ -528,7 +605,6 @@ int loadProperties() {
 		propertyNames.BENCHMARKSTARTINGBLOCKCOUNT,
 		propertyNames.BENCHMARKBLOCKCOUNTINCREMENT,
 		propertyNames.BENCHMARKTOTALINCREMENTS,
-		propertyNames.SEGMENTS
 	};
 
 	int missedProps = 0;
@@ -549,7 +625,6 @@ int loadProperties() {
 	startBlocks = std::stoi(properties.at(propertyNames.BENCHMARKSTARTINGBLOCKCOUNT));
 	blocksIncrement = std::stoi(properties.at(propertyNames.BENCHMARKBLOCKCOUNTINCREMENT));
 	incrementLimit = std::stoi(properties.at(propertyNames.BENCHMARKTOTALINCREMENTS));
-	segments = std::stoull(properties.at(propertyNames.SEGMENTS));
 	if (segments == 0) segments = 1;
 
 	return 0;
@@ -603,55 +678,29 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "No GPUs detected in system!\n");
 		return 1;
 	}
-
 	if (benchmarkBlockCounts) {
 		return benchmark();
 	}
 
-	const int arraySize = threadCountPerBlock * blockCount;
-	uint64 hexDigitPosition;
-	if (argc == 1) {
-		std::cout << "Input hexDigit to calculate (1-indexed):" << std::endl;
-		std::cin >> hexDigitPosition;
-	}
-	else {
-		hexDigitPosition = std::stoull(argv[1]);
-	}
+	commandLineArgsLoader args(argc, argv);
 
-	if (argc >= 3) {
-		segments = std::stoull(argv[2]);
-	}
+	const int arraySize = threadCountPerBlock * blockCount;
+	uint64 hexDigitPosition = args.getDigit();
+
+	segments = args.getTotalSegments();
 	
-	uint64 segmentNumber = 0;
-	if (argc < 4 && segments > 1) {
-		std::cout << "Input segment number to calculate (1 - " << segments << ")" << std::endl;
-		std::cin >> segmentNumber;
-		segmentNumber--;
-	}
-	else if(segments > 1) {
-		segmentNumber = std::stoull(argv[3]);
-		segmentNumber--;
-	}
+	uint64 segmentNumber = args.getSegmentNumber(segments);
 
 	digitData data(hexDigitPosition, segments, segmentNumber);
 
 	std::thread * handles = new std::thread[totalGpus];
 	bbpLauncher * gpuData = new bbpLauncher[totalGpus];
-
-	int reloadChoice = 0;
-	if (argc >= 5) {
-		std::string reloadChoiceString = argv[4];
-		if (reloadChoiceString.compare("y") == 0) {
-			reloadChoice = 1;
-		}
-		else if (reloadChoiceString.compare("n") == 0) {
-			reloadChoice = 2;
-		}
-	}
-
+	
 	progressData prog(totalGpus);
 	if (prog.error != cudaSuccess) return 1;
-	if (prog.checkForProgressCache(&data, segments, segmentNumber + 1LLU, reloadChoice)) return 1;
+	prog.setReloadPolicy(args.getReloadChoice());
+
+	if (prog.checkForProgressCache(&data, segments, segmentNumber + 1LLU)) return 1;
 
 	chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
 	prog.begin = &start;
