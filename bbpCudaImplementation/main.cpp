@@ -379,7 +379,7 @@ public:
 };
 
 //this class observes a given digitData object,
-//and also a list of bbpLaunchers
+//and also a vector of bbpLaunchers
 //it can make a cache file for a computation, and also reload such cache files
 class progressData {
 public:
@@ -390,7 +390,7 @@ public:
 	volatile int quit = 0;
 	chr::high_resolution_clock::time_point * begin;
 	std::string progressFilenamePrefix;
-	std::list<bbpLauncher*> launchersTracked;
+	std::vector<bbpLauncher*> launchersTracked;
 
 	progressData(digitData * data)
 	{
@@ -732,7 +732,7 @@ int main(int argc, char** argv) {
 	if (data.error != cudaSuccess) return 1;
 
 	std::thread * handles = new std::thread[totalGpus];
-	bbpLauncher * gpuData = new bbpLauncher[totalGpus];
+	std::vector<bbpLauncher*> gpuData;
 	
 	progressData prog(&data);
 	prog.setReloadPolicy(args.getReloadChoice());
@@ -743,15 +743,15 @@ int main(int argc, char** argv) {
 	prog.begin = &start;
 
 	for (int i = 0; i < totalGpus; i++) {
-		gpuData[i].setData(&data);
-		gpuData[i].setSize(arraySize);
-		prog.addLauncherToTrack(gpuData + i);
+		gpuData.push_back(new bbpLauncher(&data));
+		gpuData[i]->setSize(arraySize);
+		prog.addLauncherToTrack(gpuData[i]);
 	}
 
 	std::thread progThread(&progressData::progressCheck, &prog);
 
 	for (int i = 0; i < totalGpus; i++) {
-		handles[i] = std::thread(&bbpLauncher::launch, gpuData + i, i);
+		handles[i] = std::thread(&bbpLauncher::launch, gpuData[i], i);
 	}
 
 	sJ cudaResult = prog.previousCache;
@@ -760,13 +760,13 @@ int main(int argc, char** argv) {
 
 		handles[i].join();
 
-		cudaStatus = gpuData[i].getError();
+		cudaStatus = gpuData[i]->getError();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaBbpLaunch failed on gpu%d!\n", i);
 			stop = true;
 		}
 
-		sJ output = gpuData[i].getResult();
+		sJ output = gpuData[i]->getResult();
 
 		//sum results from gpus
 		sJAdd(&cudaResult, &output);
@@ -778,7 +778,8 @@ int main(int argc, char** argv) {
 	progThread.join();
 
 	delete[] handles;
-	delete[] gpuData;
+	for (bbpLauncher* launcher : gpuData) delete launcher;
+	gpuData.clear();
 
 	if (!stop) {
 
