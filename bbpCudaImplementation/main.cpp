@@ -35,7 +35,6 @@ const struct {
 
 std::string propertiesFile = "application.properties";
 std::string progressFilenamePrefixTemplate = "exponent%lluTotalSegments%lluSegment%lluProgress";
-int totalGpus;
 uint64 strideMultiplier;
 //warpsize is 32 so optimal value is almost certainly a multiple of 32
 const int threadCountPerBlock = 128;
@@ -134,6 +133,9 @@ public:
 	uint64 sumBegin = 0;
 	uint64 segmentBegin = 0;
 	std::atomic<uint64> launchCount;
+	cudaError_t error;
+	volatile uint64 * currentProgress;
+	uint64 * deviceProg;
 
 	digitData(uint64 digitInput, uint64 segments, uint64 segmentNumber) {
 
@@ -168,34 +170,14 @@ public:
 		this->sumEnd = segmentWidth * (segmentNumber + 1) - 1;
 
 		this->sumEnd = std::min(this->sumEnd, endIndexOfSum);
+
+		setupProgress();
 	}
-};
 
-//this class facilitates tracking progress for a given segment of a digit
-//including periodic caching to file, and reloading from a cache file
-class progressData {
-public:
-	volatile uint64 * currentProgress;
-	uint64 * deviceProg;
-	sJ previousCache;
-	double previousTime;
-	int reloadChoice;
-	std::deque<std::pair<sJ, uint64>> * currentResult;
-	digitData * digit;
-	volatile int quit = 0;
-	cudaError_t error;
-	chr::high_resolution_clock::time_point * begin;
-	std::mutex * queueMtx;
-	std::string progressFilenamePrefix;
-
-	progressData(int gpus) {
-
+	void setupProgress() {
 		//these variables are linked between host and device memory allowing each to communicate about progress
 		volatile uint64 *currProgHost;
 		uint64 * currProgDevice;
-
-		this->currentResult = new std::deque<std::pair<sJ, uint64>>[gpus];
-		this->queueMtx = new std::mutex[gpus];
 
 		//allow device to map host memory for progress ticker
 		this->error = cudaSetDeviceFlags(cudaDeviceMapHost);
@@ -222,6 +204,197 @@ public:
 
 		this->deviceProg = currProgDevice;
 		this->currentProgress = currProgHost;
+	}
+};
+
+class bbpLauncher {
+	static int totalLaunchers;
+	sJ output;
+	int size = 0;
+	cudaError_t error;
+	digitData * data;
+	std::deque<std::pair<sJ, uint64>> cacheQueue;
+	std::mutex cacheMutex;
+
+	void cacheProgress(uint64 cacheEnd, sJ cacheData) {
+		cacheMutex.lock();
+		cacheQueue.emplace_back(cacheData, cacheEnd);
+		cacheMutex.unlock();
+	}
+
+public:
+	bbpLauncher(digitData * data) {
+		this->data = data;
+	}
+
+	bbpLauncher() {}
+
+	void setData(digitData * data) {
+		this->data = data;
+	}
+
+	void setSize(int size) {
+		this->size = size;
+	}
+
+	cudaError_t getError() {
+		return this->error;
+	}
+
+	sJ getResult() {
+		return this->output;
+	}
+
+	std::pair<sJ, uint64> getCacheFront() {
+		cacheMutex.lock();
+		std::pair<sJ, uint64> frontOfQ = cacheQueue.front();
+		cacheQueue.pop_front();
+		cacheMutex.unlock();
+		return frontOfQ;
+	}
+
+	bool hasCache() {
+		return cacheQueue.size() > 0;
+	}
+
+	// Helper function for using CUDA
+	void launch(int gpu)
+	{
+		sJ *dev_c = 0;
+		sJ* c = new sJ[1];
+		sJ *dev_ex = 0;
+
+		cudaError_t cudaStatus;
+
+		uint64 launchWidth, neededLaunches, currentLaunch;
+
+		uint64 lastWrite = 0;
+
+		// Choose which GPU to run on, change this on a multi-GPU system.
+		cudaStatus = cudaSetDevice(gpu);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
+			goto Error;
+		}
+
+		// Allocate GPU buffer for temp vector
+		cudaStatus = cudaMalloc((void**)&dev_ex, this->size * sizeof(sJ) * 7);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
+		// Allocate GPU buffer for output vector
+		cudaStatus = cudaMalloc((void**)&dev_c, this->size * sizeof(sJ) * 7);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed!");
+			goto Error;
+		}
+
+		launchWidth = (uint64)this->size * strideMultiplier;
+
+		//need to round up
+		//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
+		//even when digit/launchWidth is an integer, it is necessary to add 1
+		neededLaunches = ((this->data->sumEnd - this->data->sumBegin) / launchWidth) + 1LLU;
+		while (!stop && ((currentLaunch = this->data->launchCount++) < neededLaunches)) {
+
+			uint64 begin = this->data->sumBegin + (launchWidth * currentLaunch);
+			uint64 end = this->data->sumBegin + (launchWidth * (currentLaunch + 1)) - 1;
+			if (end > this->data->sumEnd) end = this->data->sumEnd;
+
+			// cudaDeviceSynchronize waits for the kernel to finish, and returns
+			// any errors encountered during the launch.
+			cudaStatus = cudaDeviceSynchronize();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu %d!\n", cudaStatus, gpu);
+				goto Error;
+			}
+			//after exactly cachePeriod number of launches since last period between all gpus, write all data computed during and before the period to status buffer for progress thread to save
+			if ((currentLaunch - lastWrite) >= cachePeriod) {
+
+				lastWrite += cachePeriod;
+
+				//copy current results into temp array to reduce and update status
+				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ) * 7, cudaMemcpyDeviceToDevice);
+				if (cudaStatus != cudaSuccess) {
+					fprintf(stderr, "cudaMemcpy failed in status update!\n");
+					goto Error;
+				}
+
+				cudaStatus = reduceSJ(dev_ex, size * 7);
+
+				if (cudaStatus != cudaSuccess) {
+					goto Error;
+				}
+
+				// Copy result (reduced into first element) from GPU buffer to host memory.
+				cudaStatus = cudaMemcpy(c, dev_ex, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
+				if (cudaStatus != cudaSuccess) {
+					fprintf(stderr, "cudaMemcpy failed in status update!\n");
+					goto Error;
+				}
+
+				cacheProgress(this->data->sumBegin + (launchWidth * lastWrite), c[0]);
+			}
+
+			// calls the bbpKernel to compute a portion of the total bbp sum on the GPU
+			bbpPassThrough(threadCountPerBlock, blockCount * 7, dev_c, this->data->deviceProg, this->data->startingExponent, begin, end, strideMultiplier);
+
+			// Check for any errors launching the kernel
+			cudaStatus = cudaGetLastError();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "bbpKernel launch failed on gpu%d: %s\n", gpu, cudaGetErrorString(cudaStatus));
+				goto Error;
+			}
+
+			////give the rest of the computer some gpu time to reduce system choppiness
+			//if (primaryGpu) {
+			//	std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			//}
+		}
+
+		cudaStatus = reduceSJ(dev_c, size * 7);
+
+		if (cudaStatus != cudaSuccess) {
+			goto Error;
+		}
+
+		// Copy result (reduced into first element) from GPU buffer to host memory.
+		cudaStatus = cudaMemcpy(c, dev_c, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy failed!\n");
+			goto Error;
+		}
+
+		this->output = c[0];
+
+	Error:
+		free(c);
+		cudaFree(dev_c);
+		cudaFree(dev_ex);
+
+		this->error = cudaStatus;
+	}
+};
+
+//this class observes a given digitData object,
+//and also a list of bbpLaunchers
+//it can make a cache file for a computation, and also reload such cache files
+class progressData {
+public:
+	sJ previousCache;
+	double previousTime;
+	int reloadChoice;
+	digitData * digit;
+	volatile int quit = 0;
+	chr::high_resolution_clock::time_point * begin;
+	std::string progressFilenamePrefix;
+	std::list<bbpLauncher*> launchersTracked;
+
+	progressData(digitData * data)
+	{
+		this->digit = data;
 		this->quit = 0;
 		this->reloadChoice = 0;
 	}
@@ -230,14 +403,15 @@ public:
 		this->reloadChoice = choice;
 	}
 
+	void addLauncherToTrack(bbpLauncher * launcher) {
+		launchersTracked.push_back(launcher);
+	}
+
 	~progressData() {
-		delete[] this->currentResult;
-		delete[] this->queueMtx;
 		//TODO: delete the device/host pointers?
 	}
 
-	int checkForProgressCache(digitData * data, uint64 totalSegments, uint64 segment) {
-		this->digit = data;
+	int checkForProgressCache(uint64 totalSegments, uint64 segment) {
 		char buffer[256];
 		snprintf(buffer, sizeof(buffer), progressFilenamePrefixTemplate.c_str(), this->digit->startingExponent, totalSegments, segment);
 		this->progressFilenamePrefix = buffer;
@@ -323,7 +497,7 @@ public:
 		while (!this->quit) {
 			count++;
 
-			uint64 readCurrent = *(this->currentProgress);
+			uint64 readCurrent = *(this->digit->currentProgress);
 
 			//currentProgress is always initialized at zero
 			//when progress is reloaded or a segment after the first is started
@@ -348,198 +522,63 @@ public:
 
 			double timeEst = (1.0 - progress) / (progressPerSecond);
 			//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
-			double time = this->previousTime + (chr::duration_cast<chr::duration<double>>(now - *this->begin)).count();
+			double elapsedTime = this->previousTime + (chr::duration_cast<chr::duration<double>>(now - *this->begin)).count();
 			//only print every 10th cycle or 0.1 seconds
 			if (count == 10) {
 				count = 0;
-				printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond, time);
+				printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond, elapsedTime);
 			}
 
 			bool resultsReady = true;
 
-			for (int i = 0; i < totalGpus; i++) resultsReady = resultsReady && (this->currentResult[i].size() > 0);
+			for (bbpLauncher* launcher : launchersTracked) resultsReady = resultsReady && (launcher->hasCache());
 
 			if (resultsReady) {
 
-				uint64 contProcess = this->currentResult[0].front().second;
-
-				char buffer[256];
-
-				//minus 1 because cache range is [segmentBegin, contProcess)
-				double savedProgress = (double)(contProcess - 1LLU - this->digit->segmentBegin) / (double)(this->digit->sumEnd - this->digit->segmentBegin);
-
-				snprintf(buffer, sizeof(buffer), "progressCache/%s%09.6f.dat", this->progressFilenamePrefix.c_str(), 100.0*savedProgress);
-
-				//would like to do this with ofstream and std::hexfloat
-				//but msvc is a microsoft product so...
-
-				std::ofstream cacheF(buffer, std::ios::out);
-				if (cacheF.is_open()) {
-					printf("Writing data to disk\n");
-					cacheF << contProcess << std::endl;
-					//setprecision is required by msvc++ to output full precision doubles in hex
-					//although the documentation of hexfloat clearly specifies hexfloat should ignore setprecision https://en.cppreference.com/w/cpp/io/manip/fixed
-					cacheF << std::setprecision(13) << std::hexfloat << time << std::endl;
-					sJ currStatus = this->previousCache;
-					for (int i = 0; i < totalGpus; i++) {
-						this->queueMtx[i].lock();
-						sJAdd(&currStatus, &this->currentResult[i].front().first);
-						this->currentResult[i].pop_front();
-						this->queueMtx[i].unlock();
+				uint64 contProcess = 0;
+				sJ currStatus = this->previousCache;
+				bool compareCacheEnd = false;
+				bool cacheMisaligned = false;
+				for (bbpLauncher* launcher : launchersTracked) {
+					std::pair<sJ, uint64> launcherCache = launcher->getCacheFront();
+					sJAdd(&currStatus, &launcherCache.first);
+					if (compareCacheEnd) {
+						if (contProcess != launcherCache.second) cacheMisaligned = true;
 					}
-					for (int i = 0; i < 2; i++) cacheF << std::hex << currStatus.s[i] << std::endl;
-					cacheF.close();
+					else {
+						contProcess = launcherCache.second;
+					}
+					compareCacheEnd = true;
 				}
-				else {
-					fprintf(stderr, "Error opening file %s\n", buffer);
-				}
+
+				if (!cacheMisaligned) writeCache(contProcess, currStatus, elapsedTime);
 			}
 
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 	}
-};
 
-class bbpLauncher {
-public:
-	static int totalLaunchers;
-	sJ output;
-	int gpu = 0;
-	int totalGpus = 0;
-	int size = 0;
-	cudaError_t error;
-	digitData * data;
-	progressData * prog;
+	void writeCache(uint64 cacheEnd, sJ cacheData, double elapsedTime) {
+		char buffer[256];
 
-	bbpLauncher() {
-		this->gpu = totalLaunchers++;
-	}
+		//minus 1 because cache range is [segmentBegin, contProcess)
+		double savedProgress = (double)(cacheEnd - 1LLU - this->digit->segmentBegin) / (double)(this->digit->sumEnd - this->digit->segmentBegin);
 
-	void initialize(digitData * data, progressData * prog) {
-		this->data = data;
-		this->prog = prog;
-	}
+		snprintf(buffer, sizeof(buffer), "progressCache/%s%09.6f.dat", this->progressFilenamePrefix.c_str(), 100.0*savedProgress);
 
-	// Helper function for using CUDA
-	void launch()//cudaError_t addWithCuda(sJ *output, unsigned int size, TYPE digit)
-	{
-		sJ *dev_c = 0;
-		sJ* c = new sJ[1];
-		sJ *dev_ex = 0;
-
-		cudaError_t cudaStatus;
-
-		uint64 launchWidth, neededLaunches, currentLaunch;
-
-		uint64 lastWrite = 0;
-
-		// Choose which GPU to run on, change this on a multi-GPU system.
-		cudaStatus = cudaSetDevice(gpu);
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-			goto Error;
+		std::ofstream cacheF(buffer, std::ios::out);
+		if (cacheF.is_open()) {
+			printf("Writing data to disk\n");
+			cacheF << cacheEnd << std::endl;
+			//setprecision is required by msvc++ to output full precision doubles in hex
+			//although the documentation of hexfloat clearly specifies hexfloat should ignore setprecision https://en.cppreference.com/w/cpp/io/manip/fixed
+			cacheF << std::setprecision(13) << std::hexfloat << elapsedTime << std::endl;
+			for (int i = 0; i < 2; i++) cacheF << std::hex << cacheData.s[i] << std::endl;
+			cacheF.close();
 		}
-
-		// Allocate GPU buffer for temp vector
-		cudaStatus = cudaMalloc((void**)&dev_ex, this->size * sizeof(sJ) * 7);
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaMalloc failed!");
-			goto Error;
+		else {
+			fprintf(stderr, "Error opening file %s\n", buffer);
 		}
-
-		// Allocate GPU buffer for output vector
-		cudaStatus = cudaMalloc((void**)&dev_c, this->size * sizeof(sJ) * 7);
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaMalloc failed!");
-			goto Error;
-		}
-
-		launchWidth = (uint64)this->size * strideMultiplier;
-
-		//need to round up
-		//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
-		//even when digit/launchWidth is an integer, it is necessary to add 1
-		neededLaunches = ((this->data->sumEnd - this->data->sumBegin) / launchWidth) + 1LLU;
-		while (!stop && ((currentLaunch = this->data->launchCount++) < neededLaunches)) {
-
-			uint64 begin = this->data->sumBegin + (launchWidth * currentLaunch);
-			uint64 end = this->data->sumBegin + (launchWidth * (currentLaunch + 1)) - 1;
-			if (end > this->data->sumEnd) end = this->data->sumEnd;
-
-			// cudaDeviceSynchronize waits for the kernel to finish, and returns
-			// any errors encountered during the launch.
-			cudaStatus = cudaDeviceSynchronize();
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching bbpKernel on gpu %d!\n", cudaStatus, this->gpu);
-				goto Error;
-			}
-			//after exactly cachePeriod number of launches since last period between all gpus, write all data computed during and before the period to status buffer for progress thread to save
-			if ((currentLaunch - lastWrite) >= cachePeriod) {
-
-				lastWrite += cachePeriod;
-
-				//copy current results into temp array to reduce and update status
-				cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ) * 7, cudaMemcpyDeviceToDevice);
-				if (cudaStatus != cudaSuccess) {
-					fprintf(stderr, "cudaMemcpy failed in status update!\n");
-					goto Error;
-				}
-
-				cudaStatus = reduceSJ(dev_ex, size * 7);
-
-				if (cudaStatus != cudaSuccess) {
-					goto Error;
-				}
-
-				// Copy result (reduced into first element) from GPU buffer to host memory.
-				cudaStatus = cudaMemcpy(c, dev_ex, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
-				if (cudaStatus != cudaSuccess) {
-					fprintf(stderr, "cudaMemcpy failed in status update!\n");
-					goto Error;
-				}
-
-				this->prog->queueMtx[this->gpu].lock();
-				this->prog->currentResult[this->gpu].emplace_back(c[0], this->data->sumBegin + (launchWidth * lastWrite));
-				this->prog->queueMtx[this->gpu].unlock();
-			}
-
-			// calls the bbpKernel to compute a portion of the total bbp sum on the GPU
-			bbpPassThrough(threadCountPerBlock, blockCount * 7, dev_c, this->prog->deviceProg, this->data->startingExponent, begin, end, strideMultiplier);
-
-			// Check for any errors launching the kernel
-			cudaStatus = cudaGetLastError();
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "bbpKernel launch failed on gpu%d: %s\n", this->gpu, cudaGetErrorString(cudaStatus));
-				goto Error;
-			}
-
-			////give the rest of the computer some gpu time to reduce system choppiness
-			//if (primaryGpu) {
-			//	std::this_thread::sleep_for(std::chrono::milliseconds(1));
-			//}
-		}
-
-		cudaStatus = reduceSJ(dev_c, size * 7);
-
-		if (cudaStatus != cudaSuccess) {
-			goto Error;
-		}
-
-		// Copy result (reduced into first element) from GPU buffer to host memory.
-		cudaStatus = cudaMemcpy(c, dev_c, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaMemcpy failed!\n");
-			goto Error;
-		}
-
-		this->output = c[0];
-
-	Error:
-		free(c);
-		cudaFree(dev_c);
-		cudaFree(dev_ex);
-
-		this->error = cudaStatus;
 	}
 };
 
@@ -632,20 +671,16 @@ int loadProperties() {
 
 int benchmark() {
 	digitData data(benchmarkTarget, 1, 1);
-	totalGpus = 1;
-	progressData prog(totalGpus);
-	if (prog.error != cudaSuccess) return 1;
-	bbpLauncher gpuData;
-	gpuData.totalGpus = totalGpus;
-	gpuData.initialize(&data, &prog);
+	if (data.error != cudaSuccess) return 1;
+	bbpLauncher gpuData(&data);
 	std::vector<std::pair<double, int>> timings;
 	for (blockCount = startBlocks; blockCount <= (startBlocks + incrementLimit * blocksIncrement); blockCount += blocksIncrement) {
 		double total = 0.0;
 		for (int j = 0; j < numRuns; j++) {
 			data.launchCount = 0;
 			chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
-			gpuData.size = threadCountPerBlock * blockCount;
-			gpuData.launch();
+			gpuData.setSize(threadCountPerBlock * blockCount);
+			gpuData.launch(0);
 			chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
 			total += chr::duration_cast<chr::duration<double>>(end - start).count();
 		}
@@ -667,6 +702,8 @@ int main(int argc, char** argv) {
 	if (loadProperties()) return 1;
 
 	signal(SIGINT, sigint_handler);
+
+	int totalGpus = 0;
 
 	cudaError_t cudaStatus = cudaGetDeviceCount(&totalGpus);
 
@@ -692,27 +729,29 @@ int main(int argc, char** argv) {
 	uint64 segmentNumber = args.getSegmentNumber(segments);
 
 	digitData data(hexDigitPosition, segments, segmentNumber);
+	if (data.error != cudaSuccess) return 1;
 
 	std::thread * handles = new std::thread[totalGpus];
 	bbpLauncher * gpuData = new bbpLauncher[totalGpus];
 	
-	progressData prog(totalGpus);
-	if (prog.error != cudaSuccess) return 1;
+	progressData prog(&data);
 	prog.setReloadPolicy(args.getReloadChoice());
 
-	if (prog.checkForProgressCache(&data, segments, segmentNumber + 1LLU)) return 1;
+	if (prog.checkForProgressCache(segments, segmentNumber + 1LLU)) return 1;
 
 	chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
 	prog.begin = &start;
 
+	for (int i = 0; i < totalGpus; i++) {
+		gpuData[i].setData(&data);
+		gpuData[i].setSize(arraySize);
+		prog.addLauncherToTrack(gpuData + i);
+	}
+
 	std::thread progThread(&progressData::progressCheck, &prog);
 
 	for (int i = 0; i < totalGpus; i++) {
-		gpuData[i].totalGpus = totalGpus;
-		gpuData[i].size = arraySize;
-		gpuData[i].initialize(&data, &prog);
-
-		handles[i] = std::thread(&bbpLauncher::launch, gpuData + i);
+		handles[i] = std::thread(&bbpLauncher::launch, gpuData + i, i);
 	}
 
 	sJ cudaResult = prog.previousCache;
@@ -721,13 +760,13 @@ int main(int argc, char** argv) {
 
 		handles[i].join();
 
-		cudaStatus = gpuData[i].error;
+		cudaStatus = gpuData[i].getError();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaBbpLaunch failed on gpu%d!\n", i);
 			stop = true;
 		}
 
-		sJ output = gpuData[i].output;
+		sJ output = gpuData[i].getResult();
 
 		//sum results from gpus
 		sJAdd(&cudaResult, &output);
