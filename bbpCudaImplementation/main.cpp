@@ -531,6 +531,8 @@ public:
 
 			bool resultsReady = true;
 
+			resultsReady = resultsReady && (launchersTracked.size() > 0);
+
 			for (bbpLauncher* launcher : launchersTracked) resultsReady = resultsReady && (launcher->hasCache());
 
 			if (resultsReady) {
