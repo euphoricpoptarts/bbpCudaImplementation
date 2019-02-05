@@ -208,7 +208,6 @@ public:
 };
 
 class bbpLauncher {
-	static int totalLaunchers;
 	sJ output;
 	int size = 0;
 	cudaError_t error;
@@ -378,6 +377,25 @@ public:
 	}
 };
 
+class inertialDouble {
+private:
+	double value = 0.0;
+
+public:
+	void tug(double tugPoint) {
+		if (value != tugPoint) {
+			double delta = abs(value - tugPoint);
+			double larger = std::max(abs(value), abs(tugPoint));
+			double deltaScaler = delta / larger;
+			value += ((tugPoint - value)*deltaScaler);
+		}
+	}
+
+	double getValue() {
+		return value;
+	}
+};
+
 //this class observes a given digitData object,
 //and also a vector of bbpLaunchers
 //it can make a cache file for a computation, and also reload such cache files
@@ -494,6 +512,7 @@ public:
 		std::deque<double> progressQ;
 		std::deque<chr::high_resolution_clock::time_point> timeQ;
 		int count = 0;
+		inertialDouble progressPerSecond;
 		while (!this->quit) {
 			count++;
 
@@ -518,15 +537,20 @@ public:
 
 			double progressInPeriod = progressQ.front() - progressQ.back();
 			double elapsedPeriod = chr::duration_cast<chr::duration<double>>(timeQ.front() - timeQ.back()).count();
-			double progressPerSecond = progressInPeriod / elapsedPeriod;
+			if (elapsedPeriod > 0.0) {
+				progressPerSecond.tug(progressInPeriod / elapsedPeriod);
+			}
+			else {
+				progressPerSecond.tug(0.0);
+			}
 
-			double timeEst = (1.0 - progress) / (progressPerSecond);
+			double timeEst = (1.0 - progress) / (progressPerSecond.getValue());
 			//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
 			double elapsedTime = this->previousTime + (chr::duration_cast<chr::duration<double>>(now - *this->begin)).count();
 			//only print every 10th cycle or 0.1 seconds
 			if (count == 10) {
 				count = 0;
-				printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond, elapsedTime);
+				printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond.getValue(), elapsedTime);
 			}
 
 			bool resultsReady = true;
@@ -583,8 +607,6 @@ public:
 		}
 	}
 };
-
-int bbpLauncher::totalLaunchers = 0;
 
 //standard tree-based parallel reduce
 cudaError_t reduceSJ(sJ *c, unsigned int size) {
