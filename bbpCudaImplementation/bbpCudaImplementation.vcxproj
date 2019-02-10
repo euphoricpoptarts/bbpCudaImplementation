@@ -101,7 +101,10 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="bbpLauncher.hpp" />
+    <ClInclude Include="digitData.hpp" />
     <ClInclude Include="kernel.cuh" />
+    <ClInclude Include="progressData.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
