@@ -14,6 +14,11 @@
 #include "digitData.hpp"
 
 namespace chr = std::chrono;
+uint64 segments = 1;
+int startBlocks, blocksIncrement, incrementLimit;
+uint64 benchmarkTarget;
+int benchmarkBlockCounts;
+int numRuns;
 
 const struct {
 	const std::string STRIDEMULTIPLIER = "strideMultiplier",
@@ -159,7 +164,7 @@ int loadProperties() {
 int benchmark() {
 	digitData data(benchmarkTarget, 1, 1);
 	if (data.error != cudaSuccess) return 1;
-	bbpLauncher gpuData(&data);
+	bbpLauncher gpuData(&data, 0);
 	std::vector<std::pair<double, int>> timings;
 	for (blockCount = startBlocks; blockCount <= (startBlocks + incrementLimit * blocksIncrement); blockCount += blocksIncrement) {
 		double total = 0.0;
@@ -167,7 +172,7 @@ int benchmark() {
 			data.launchCount = 0;
 			chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
 			gpuData.setSize(threadCountPerBlock * blockCount);
-			gpuData.launch(0);
+			gpuData.launch();
 			chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
 			total += chr::duration_cast<chr::duration<double>>(end - start).count();
 		}
@@ -230,7 +235,7 @@ int main(int argc, char** argv) {
 	prog.begin = &start;
 
 	for (int i = 0; i < totalGpus; i++) {
-		gpuData.push_back(new bbpLauncher(&data));
+		gpuData.push_back(new bbpLauncher(&data, i));
 		gpuData[i]->setSize(arraySize);
 		prog.addLauncherToTrack(gpuData[i]);
 	}
@@ -238,7 +243,7 @@ int main(int argc, char** argv) {
 	std::thread progThread(&progressData::progressCheck, &prog);
 
 	for (int i = 0; i < totalGpus; i++) {
-		handles[i] = std::thread(&bbpLauncher::launch, gpuData[i], i);
+		handles[i] = std::thread(&bbpLauncher::launch, gpuData[i]);
 	}
 
 	sJ cudaResult = prog.previousCache;

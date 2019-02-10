@@ -9,12 +9,7 @@ const int threadCountPerBlock = 128;
 //blockCount is trickier, and is probably a multiple of the number of streaming multiprocessors in a given gpu
 int blockCount;
 int primaryGpu;
-int benchmarkBlockCounts;
-int numRuns;
-uint64 benchmarkTarget;
-int startBlocks, blocksIncrement, incrementLimit;
 const uint64 cachePeriod = 20000;
-uint64 segments = 1;
 bool stop = false;
 
 class bbpLauncher {
@@ -24,6 +19,8 @@ class bbpLauncher {
 	digitData * data;
 	std::deque<std::pair<sJ, uint64>> cacheQueue;
 	std::mutex cacheMutex;
+	int gpu;
+	bool complete = false;
 
 	void cacheProgress(uint64 cacheEnd, sJ cacheData) {
 		cacheMutex.lock();
@@ -63,8 +60,9 @@ class bbpLauncher {
 	}
 
 public:
-	bbpLauncher(digitData * data) {
+	bbpLauncher(digitData * data, int gpu) {
 		this->data = data;
+		this->gpu = gpu;
 	}
 
 	bbpLauncher() {}
@@ -97,9 +95,14 @@ public:
 		return cacheQueue.size() > 0;
 	}
 
+	bool isComplete() {
+		return this->complete;
+	}
+
 	// Helper function for using CUDA
-	void launch(int gpu)
+	void launch()
 	{
+		this->complete = false;
 		sJ *dev_c = 0;
 		sJ* c = new sJ[1];
 		sJ *dev_ex = 0;
@@ -215,5 +218,6 @@ public:
 		cudaFree(dev_ex);
 
 		this->error = cudaStatus;
+		this->complete = true;
 	}
 };
