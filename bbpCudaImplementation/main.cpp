@@ -10,10 +10,11 @@
 #include <string>
 #include <csignal>
 #include "kernel.cuh"
-#include "progressData.hpp"
+#include "progressData.h"
 #include "bbpLauncher.hpp"
 #include "digitData.hpp"
 #include "restClientDelegator.hpp"
+#include "progressData.cpp"
 
 namespace chr = std::chrono;
 uint64 segments = 1;
@@ -191,17 +192,19 @@ int benchmark() {
 	return 0;
 }
 
-void controlViaClient(int totalGpus) {
+int controlViaClient(int totalGpus) {
 	restClientDelegator delegator;
 	progressData controller(&delegator);
 	for (int i = 0; i < totalGpus; i++) {
-		controller.addLauncherToTrack(new bbpLauncher(i));
+		controller.addLauncherToTrack(new bbpLauncher(i, threadCountPerBlock * blockCount));
 	}
 	std::thread delegatorThread(&restClientDelegator::monitorQueues, &delegator);
 
 	controller.beginWorking();
 
 	delegatorThread.join();
+
+	return 0;
 }
 
 int main(int argc, char** argv) {
@@ -224,6 +227,10 @@ int main(int argc, char** argv) {
 	}
 	if (benchmarkBlockCounts) {
 		return benchmark();
+	}
+
+	if (totalGpus == 2) {
+		return controlViaClient(totalGpus);
 	}
 
 	commandLineArgsLoader args(argc, argv);

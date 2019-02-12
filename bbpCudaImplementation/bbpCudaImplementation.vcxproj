@@ -95,6 +95,9 @@
     <CudaLink>
       <Optimization>O3</Optimization>
     </CudaLink>
+    <ProjectReference>
+      <UseLibraryDependencyInputs>true</UseLibraryDependencyInputs>
+    </ProjectReference>
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="kernel.cu" />
@@ -106,7 +109,8 @@
     <ClInclude Include="bbpLauncher.hpp" />
     <ClInclude Include="digitData.hpp" />
     <ClInclude Include="kernel.cuh" />
-    <ClInclude Include="progressData.hpp" />
+    <ClInclude Include="progressData.h" />
+    <ClInclude Include="progressData.cpp" />
     <ClInclude Include="restClientDelegator.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

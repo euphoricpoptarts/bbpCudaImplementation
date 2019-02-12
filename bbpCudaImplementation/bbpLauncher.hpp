@@ -80,8 +80,9 @@ public:
 		queryUuid();
 	}
 
-	bbpLauncher(int gpu) {
+	bbpLauncher(int gpu, int size) {
 		this->gpu = gpu;
+		this->size = size;
 		queryUuid();
 	}
 

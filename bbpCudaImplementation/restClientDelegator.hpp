@@ -21,6 +21,7 @@
 #include <list>
 #include "digitData.hpp"
 #include "kernel.cuh"
+#include "progressData.h"
 
 namespace ip = boost::asio::ip;       // from <boost/asio/ip/tcp.hpp>
 namespace http = boost::beast::http;    // from <boost/beast/http.hpp>
@@ -166,7 +167,7 @@ public:
 		std::stringstream ss(res_.body());
 		boost::property_tree::read_json(ss, pt);
 
-		//processResponse(pt);
+		processResponse(pt);
 
 		// Gracefully close the socket
 		socket_.shutdown(ip::tcp::socket::shutdown_both, ec);
@@ -180,6 +181,7 @@ public:
 
 	static void processRequest(progressData * data, boost::property_tree::ptree pt) {
 		if (!pt.empty()) {
+			std::cout << "response received" << std::endl;
 			uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
 			uint64 segmentBegin = std::stoull(pt.get<std::string>("segmentStart"));
 			uint64 exponent = std::stoull(pt.get<std::string>("segmentEnd"));
@@ -222,8 +224,8 @@ public:
 	}
 
 	void monitorQueues() {
-		boost::asio::io_context ioc;
 		while (!stop) {
+			boost::asio::io_context ioc;
 			bool requestsMade = false;
 			resultsMtx.lock();
 			for (segmentResult& result : resultsToSave) {
@@ -236,6 +238,7 @@ public:
 			requestsMtx.lock();
 			for (segmentRequest& request : requestsForWork) {
 				requestsMade = true;
+				std::cout << "SNEEDing request" << std::endl;
 				std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processRequest, request.controller, std::placeholders::_1);
 				std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f);
 			}

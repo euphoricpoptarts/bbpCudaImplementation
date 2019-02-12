@@ -24,7 +24,9 @@ public:
 	}
 
 	digitData(uint64 sumEnd, uint64 startingExponent, uint64 segmentBegin, int imdifferent)
-		: sumEnd(sumEnd), startingExponent(startingExponent), sumBegin(segmentBegin), segmentBegin(segmentBegin) {}
+		: sumEnd(sumEnd), startingExponent(startingExponent), sumBegin(segmentBegin), segmentBegin(segmentBegin) {
+		std::atomic_init(&this->launchCount, 0);
+	}
 
 	digitData(uint64 digitInput, uint64 segments, uint64 segmentNumber) {
 
