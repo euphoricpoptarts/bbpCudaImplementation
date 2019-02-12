@@ -184,7 +184,7 @@ public:
 			std::cout << "response received" << std::endl;
 			uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
 			uint64 segmentBegin = std::stoull(pt.get<std::string>("segmentStart"));
-			uint64 exponent = std::stoull(pt.get<std::string>("segmentEnd"));
+			uint64 exponent = std::stoull(pt.get<std::string>("exponent"));
 			digitData * workUnit = new digitData(sumEnd, exponent, segmentBegin, 0);
 			data->assignWork(workUnit);
 		}
