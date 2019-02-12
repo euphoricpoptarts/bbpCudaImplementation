@@ -14,6 +14,18 @@ public:
 	volatile uint64 * currentProgress;
 	uint64 * deviceProg;
 
+	digitData(const digitData& toCopy) {
+		//no copy should need the old currentProgress and deviceProg
+		//as no owner of a copy should need those members
+		this->sumEnd = toCopy.sumEnd;
+		this->startingExponent = toCopy.startingExponent;
+		this->sumBegin = toCopy.sumBegin;
+		this->segmentBegin = toCopy.segmentBegin;
+	}
+
+	digitData(uint64 sumEnd, uint64 startingExponent, uint64 segmentBegin, int imdifferent)
+		: sumEnd(sumEnd), startingExponent(startingExponent), sumBegin(segmentBegin), segmentBegin(segmentBegin) {}
+
 	digitData(uint64 digitInput, uint64 segments, uint64 segmentNumber) {
 
 		//this currently assumes that all launches will be of the same width (which is currently the case)

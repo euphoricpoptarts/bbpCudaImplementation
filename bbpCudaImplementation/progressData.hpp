@@ -17,6 +17,8 @@
 
 namespace chr = std::chrono;
 
+class restClientDelegator;
+
 class inertialDouble {
 private:
 	double value = 0.0;
@@ -42,15 +44,90 @@ public:
 class progressData {
 private:
 	static const std::string progressFilenamePrefixTemplate;
+	std::string progressFilenamePrefix;
+	std::vector<bbpLauncher*> launchersTracked;
+	int reloadChoice;
+	digitData * digit;
+	digitData * nextWorkUnit;
+	bool workAssigned = false;
+	bool workRequested = false;
+	restClientDelegator * delegator;
+
+	void writeCache(uint64 cacheEnd, sJ cacheData, double elapsedTime) {
+		char buffer[256];
+
+		//minus 1 because cache range is [segmentBegin, contProcess)
+		double savedProgress = (double)(cacheEnd - 1LLU - this->digit->segmentBegin) / (double)(this->digit->sumEnd - this->digit->segmentBegin);
+
+		snprintf(buffer, sizeof(buffer), "progressCache/%s%09.6f.dat", this->progressFilenamePrefix.c_str(), 100.0*savedProgress);
+
+		std::ofstream cacheF(buffer, std::ios::out);
+		if (cacheF.is_open()) {
+			printf("Writing data to disk\n");
+			cacheF << cacheEnd << std::endl;
+			//setprecision is required by msvc++ to output full precision doubles in hex
+			//although the documentation of hexfloat clearly specifies hexfloat should ignore setprecision https://en.cppreference.com/w/cpp/io/manip/fixed
+			cacheF << std::setprecision(13) << std::hexfloat << elapsedTime << std::endl;
+			for (int i = 0; i < 2; i++) cacheF << std::hex << cacheData.s[i] << std::endl;
+			cacheF.close();
+		}
+		else {
+			fprintf(stderr, "Error opening file %s\n", buffer);
+		}
+	}
+
+	int reloadFromCache(std::string pToFile) {
+		std::cout << "Loading cache and continuing computation." << std::endl;
+
+		std::ifstream cacheF(pToFile, std::ios::in);
+
+		if (!cacheF.is_open()) {
+			std::cerr << "Could not open " << pToFile << "!" << std::endl;
+			return 1;
+		}
+
+		bool readSuccess = true;
+		readSuccess = readSuccess && (cacheF >> std::dec >> this->digit->sumBegin);
+		readSuccess = readSuccess && (cacheF >> std::hexfloat >> this->previousTime);
+		for (int i = 0; i < 2; i++) readSuccess = readSuccess && (cacheF >> std::hex >> this->previousCache.s[i]);
+
+		cacheF.close();
+
+		if (!readSuccess) {
+			std::cerr << "Cache reload failed due to improper file formatting!" << std::endl;
+			return 1;
+		}
+		return 0;
+	}
+
+	void requestWork() {
+		std::list<std::string> controlledUuids;
+		for (bbpLauncher* launcher : launchersTracked) controlledUuids.push_back(launcher->getUuid());
+		this->delegator->addRequestToQueue(this, controlledUuids);
+		workRequested = false;
+	}
+
+	void blockForWork() {
+		std::mutex mtx;
+		std::unique_lock<std::mutex> ul(mtx);
+		std::condition_variable cv;
+		cv.wait(ul, [this] {return this->workAssigned; });
+
+		if (digit) delete digit;
+		
+		digit = nextWorkUnit;
+
+		nextWorkUnit = nullptr;
+
+		workAssigned = false;
+		workRequested = false;
+	}
+
 public:
 	sJ previousCache;
 	double previousTime;
-	int reloadChoice;
-	digitData * digit;
 	volatile int quit = 0;
-	chr::high_resolution_clock::time_point * begin;
-	std::string progressFilenamePrefix;
-	std::vector<bbpLauncher*> launchersTracked;
+	chr::high_resolution_clock::time_point begin;
 
 	progressData(digitData * data)
 	{
@@ -59,8 +136,18 @@ public:
 		this->reloadChoice = 0;
 	}
 
+	progressData(restClientDelegator * delegator)
+	{
+		this->delegator = delegator;
+	}
+
 	void setReloadPolicy(int choice) {
 		this->reloadChoice = choice;
+	}
+
+	void assignWork(digitData * data) {
+		this->nextWorkUnit = data;
+		this->workAssigned = true;
 	}
 
 	void addLauncherToTrack(bbpLauncher * launcher) {
@@ -124,28 +211,43 @@ public:
 		return 0;
 	}
 
-	int reloadFromCache(std::string pToFile) {
-		std::cout << "Loading cache and continuing computation." << std::endl;
+	void beginWorking() {
+		requestWork();
+		for (int i = 0; i < 10; i++) {
 
-		std::ifstream cacheF(pToFile, std::ios::in);
+			blockForWork();
 
-		if (!cacheF.is_open()) {
-			std::cerr << "Could not open " << pToFile << "!" << std::endl;
-			return 1;
+			std::list<std::pair<std::thread, bbpLauncher *>> threadLauncherPairs;
+			for (bbpLauncher* launcher : launchersTracked) {
+				launcher->setData(digit);
+				threadLauncherPairs.emplace_back(std::thread(&bbpLauncher::launch, launcher), launcher);
+			}
+			progressCheck();
+			sJ cudaResult;
+			cudaError_t cudaStatus;
+			begin = chr::high_resolution_clock::now();
+
+			for (std::pair<std::thread, bbpLauncher *>& pair : threadLauncherPairs) {
+				pair.first.join();
+
+				cudaStatus = pair.second->getError();
+				if (cudaStatus != cudaSuccess) {
+					fprintf(stderr, "cudaBbpLaunch failed on gpu %s!\n", pair.second->getUuid().c_str());
+				}
+
+				sJ output = pair.second->getResult();
+
+				//sum results from gpus
+				sJAdd(&cudaResult, &output);
+			}
+			double time = (chr::duration_cast<chr::duration<double>>(chr::high_resolution_clock::now() - this->begin)).count();
+			printf("result of work-unit is %016llX %016llX\n",
+				cudaResult.s[1], cudaResult.s[0]);
+			printf("Computed in %.8f seconds\n", time);
+			if (!this->workRequested) {
+				requestWork();
+			}
 		}
-
-		bool readSuccess = true;
-		readSuccess = readSuccess && (cacheF >> std::dec >> this->digit->sumBegin);
-		readSuccess = readSuccess && (cacheF >> std::hexfloat >> this->previousTime);
-		for (int i = 0; i < 2; i++) readSuccess = readSuccess && (cacheF >> std::hex >> this->previousCache.s[i]);
-
-		cacheF.close();
-
-		if (!readSuccess) {
-			std::cerr << "Cache reload failed due to improper file formatting!" << std::endl;
-			return 1;
-		}
-		return 0;
 	}
 
 	//this function is meant to be run by an independent thread to output progress to the console
@@ -188,7 +290,7 @@ public:
 
 			double timeEst = (1.0 - progress) / (progressPerSecond.getValue());
 			//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
-			double elapsedTime = this->previousTime + (chr::duration_cast<chr::duration<double>>(now - *this->begin)).count();
+			double elapsedTime = this->previousTime + (chr::duration_cast<chr::duration<double>>(now - this->begin)).count();
 			//only print every 10th cycle or 0.1 seconds
 			if (count == 10) {
 				count = 0;
@@ -223,29 +325,15 @@ public:
 			}
 
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-		}
-	}
+			if (timeEst < 1.0 && !this->workRequested) {
+				requestWork();
+			}
 
-	void writeCache(uint64 cacheEnd, sJ cacheData, double elapsedTime) {
-		char buffer[256];
-
-		//minus 1 because cache range is [segmentBegin, contProcess)
-		double savedProgress = (double)(cacheEnd - 1LLU - this->digit->segmentBegin) / (double)(this->digit->sumEnd - this->digit->segmentBegin);
-
-		snprintf(buffer, sizeof(buffer), "progressCache/%s%09.6f.dat", this->progressFilenamePrefix.c_str(), 100.0*savedProgress);
-
-		std::ofstream cacheF(buffer, std::ios::out);
-		if (cacheF.is_open()) {
-			printf("Writing data to disk\n");
-			cacheF << cacheEnd << std::endl;
-			//setprecision is required by msvc++ to output full precision doubles in hex
-			//although the documentation of hexfloat clearly specifies hexfloat should ignore setprecision https://en.cppreference.com/w/cpp/io/manip/fixed
-			cacheF << std::setprecision(13) << std::hexfloat << elapsedTime << std::endl;
-			for (int i = 0; i < 2; i++) cacheF << std::hex << cacheData.s[i] << std::endl;
-			cacheF.close();
-		}
-		else {
-			fprintf(stderr, "Error opening file %s\n", buffer);
+			if (timeEst < 0.5) {
+				bool launchersDone = true;
+				for (bbpLauncher* launcher : launchersTracked) launchersDone = launchersDone && launcher->isComplete();
+				this->quit = launchersDone;
+			}
 		}
 	}
 };

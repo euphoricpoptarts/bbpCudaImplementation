@@ -1,5 +1,6 @@
 #pragma once
 #include <mutex>
+#include <sstream>
 #include "digitData.hpp"
 #include "kernel.cuh"
 
@@ -21,6 +22,7 @@ class bbpLauncher {
 	std::mutex cacheMutex;
 	int gpu;
 	bool complete = false;
+	std::string uuid;
 
 	void cacheProgress(uint64 cacheEnd, sJ cacheData) {
 		cacheMutex.lock();
@@ -59,13 +61,35 @@ class bbpLauncher {
 		return cudaStatus;
 	}
 
+	void queryUuid() {
+		cudaDeviceProp devProps;
+		cudaGetDeviceProperties(&devProps, this->gpu);
+		std::stringstream ss;
+		ss << std::hex << std::uppercase << std::setfill('0');
+		for (int i = 0; i < 16; i++) {
+			unsigned int byte = (unsigned char)devProps.uuid.bytes[i];
+			ss << std::setw(2) << byte;
+		}
+		this->uuid = ss.str();
+	}
+
 public:
 	bbpLauncher(digitData * data, int gpu) {
 		this->data = data;
 		this->gpu = gpu;
+		queryUuid();
+	}
+
+	bbpLauncher(int gpu) {
+		this->gpu = gpu;
+		queryUuid();
 	}
 
 	bbpLauncher() {}
+
+	std::string getUuid() {
+		return this->uuid;
+	}
 
 	void setData(digitData * data) {
 		this->data = data;

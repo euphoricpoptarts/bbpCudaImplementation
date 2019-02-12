@@ -1,3 +1,4 @@
+#pragma once
 #include <stdio.h>
 #include <math.h>
 #include <chrono>
@@ -12,6 +13,7 @@
 #include "progressData.hpp"
 #include "bbpLauncher.hpp"
 #include "digitData.hpp"
+#include "restClientDelegator.hpp"
 
 namespace chr = std::chrono;
 uint64 segments = 1;
@@ -189,6 +191,19 @@ int benchmark() {
 	return 0;
 }
 
+void controlViaClient(int totalGpus) {
+	restClientDelegator delegator;
+	progressData controller(&delegator);
+	for (int i = 0; i < totalGpus; i++) {
+		controller.addLauncherToTrack(new bbpLauncher(i));
+	}
+	std::thread delegatorThread(&restClientDelegator::monitorQueues, &delegator);
+
+	controller.beginWorking();
+
+	delegatorThread.join();
+}
+
 int main(int argc, char** argv) {
 
 	if (loadProperties()) return 1;
@@ -232,7 +247,7 @@ int main(int argc, char** argv) {
 	if (prog.checkForProgressCache(segments, segmentNumber + 1LLU)) return 1;
 
 	chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
-	prog.begin = &start;
+	prog.begin = start;
 
 	for (int i = 0; i < totalGpus; i++) {
 		gpuData.push_back(new bbpLauncher(&data, i));
@@ -265,7 +280,7 @@ int main(int argc, char** argv) {
 	}
 
 	//tell the progress thread to quit
-	prog.quit = 1;
+	//prog.quit = 1;
 
 	progThread.join();
 
