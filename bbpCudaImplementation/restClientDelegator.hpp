@@ -181,7 +181,6 @@ public:
 
 	static void processRequest(progressData * data, boost::property_tree::ptree pt) {
 		if (!pt.empty()) {
-			std::cout << "response received" << std::endl;
 			uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
 			uint64 segmentBegin = std::stoull(pt.get<std::string>("segmentStart"));
 			uint64 exponent = std::stoull(pt.get<std::string>("exponent"));
@@ -238,7 +237,6 @@ public:
 			requestsMtx.lock();
 			for (segmentRequest& request : requestsForWork) {
 				requestsMade = true;
-				std::cout << "SNEEDing request" << std::endl;
 				std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processRequest, request.controller, std::placeholders::_1);
 				std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f);
 			}
