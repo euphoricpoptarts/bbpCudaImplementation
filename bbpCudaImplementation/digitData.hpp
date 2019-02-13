@@ -1,5 +1,7 @@
 #pragma once
 #include <atomic>
+#include <algorithm>
+#include "kernel.cuh"
 
 //this class contains all needed data to define the work for a given segment of a digit
 //and to synchronize that work between multiple GPUs

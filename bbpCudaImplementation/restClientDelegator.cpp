@@ -1,4 +1,4 @@
-#pragma once
+#include "restClientDelegator.h"
 
 //modified from boost examples: https://www.boost.org/doc/libs/1_69_0/libs/beast/example/http/client/async/http_client_async.cpp
 
@@ -9,7 +9,6 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
-#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -35,17 +34,6 @@ fail(boost::system::error_code ec, char const* what)
 	std::cerr << what << ": " << ec.message() << "\n";
 }
 
-struct segmentResult {
-	digitData digit;
-	sJ result;
-	double totalTime;
-};
-
-struct segmentRequest {
-	progressData * controller;
-	std::list<std::string> controlledUuids;
-};
-
 // Performs an HTTP GET and prints the response
 class session : public std::enable_shared_from_this<session>
 {
@@ -58,7 +46,7 @@ class session : public std::enable_shared_from_this<session>
 	char const* port;
 	char const* target;
 	int version;
-	std::function<void (boost::property_tree::ptree)> processResponse;
+	std::function<void(boost::property_tree::ptree)> processResponse;
 
 public:
 	// Resolver and socket require an io_context
@@ -78,7 +66,7 @@ public:
 
 	// Start the asynchronous operation
 	void
-		run(std::function<void (boost::property_tree::ptree)> processResponse)
+		run(std::function<void(boost::property_tree::ptree)> processResponse)
 	{
 		this->processResponse = processResponse;
 		// Set up an HTTP GET request message
@@ -203,47 +191,39 @@ public:
 	}
 };
 
-class restClientDelegator {
-private:
-	std::list<segmentResult> resultsToSave;
-	std::list<segmentRequest> requestsForWork;
-	std::mutex resultsMtx, requestsMtx;
+void restClientDelegator::addResultToQueue(digitData * digit, sJ result, double totalTime) {
+	resultsMtx.lock();
+	resultsToSave.push_back(segmentResult{ digit, result, totalTime });
+	resultsMtx.unlock();
+}
 
-public:
-	void addResultToQueue(digitData digit, sJ result, double totalTime) {
+void restClientDelegator::addRequestToQueue(progressData * controller, std::list<std::string> controlledUuids) {
+	requestsMtx.lock();
+	requestsForWork.push_back(segmentRequest{ controller, controlledUuids });
+	requestsMtx.unlock();
+}
+
+void restClientDelegator::monitorQueues() {
+	while (!stop) {
+		boost::asio::io_context ioc;
+		bool requestsMade = false;
 		resultsMtx.lock();
-		resultsToSave.push_back(segmentResult{digit, result, totalTime});
-		resultsMtx.unlock();
-	}
-
-	void addRequestToQueue(progressData * controller, std::list<std::string> controlledUuids) {
-		requestsMtx.lock();
-		requestsForWork.push_back(segmentRequest{ controller, controlledUuids });
-		requestsMtx.unlock();
-	}
-
-	void monitorQueues() {
-		while (!stop) {
-			boost::asio::io_context ioc;
-			bool requestsMade = false;
-			resultsMtx.lock();
-			for (segmentResult& result : resultsToSave) {
-				requestsMade = true;
-				std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processResult, std::placeholders::_1);
-				std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f);
-			}
-			resultsToSave.clear();
-			resultsMtx.unlock();
-			requestsMtx.lock();
-			for (segmentRequest& request : requestsForWork) {
-				requestsMade = true;
-				std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processRequest, request.controller, std::placeholders::_1);
-				std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f);
-			}
-			requestsForWork.clear();
-			requestsMtx.unlock();
-			if(requestsMade) ioc.run();
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		for (segmentResult& result : resultsToSave) {
+			requestsMade = true;
+			std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processResult, std::placeholders::_1);
+			std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f);
 		}
+		resultsToSave.clear();
+		resultsMtx.unlock();
+		requestsMtx.lock();
+		for (segmentRequest& request : requestsForWork) {
+			requestsMade = true;
+			std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processRequest, request.controller, std::placeholders::_1);
+			std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f);
+		}
+		requestsForWork.clear();
+		requestsMtx.unlock();
+		if (requestsMade) ioc.run();
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
-};
+}

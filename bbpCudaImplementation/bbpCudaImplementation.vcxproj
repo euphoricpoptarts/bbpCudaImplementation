@@ -103,15 +103,17 @@
     <CudaCompile Include="kernel.cu" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="bbpLauncher.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="restClientDelegator.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="bbpLauncher.hpp" />
+    <ClInclude Include="bbpLauncher.h" />
     <ClInclude Include="digitData.hpp" />
     <ClInclude Include="kernel.cuh" />
     <ClInclude Include="progressData.h" />
-    <ClInclude Include="progressData.cpp" />
-    <ClInclude Include="restClientDelegator.hpp" />
+    <ClCompile Include="progressData.cpp" />
+    <ClInclude Include="restClientDelegator.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

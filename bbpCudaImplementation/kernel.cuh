@@ -9,9 +9,6 @@
 #define fastModULTRAINSTINCT 0x7ffffffffff
 //#define QUINTILLION
 
-__device__  __constant__ const uint64 twoTo63Power = 0x8000000000000000;
-__device__ int printOnce = 0;
-
 struct sJ {
 	uint64 s[2] = { 0, 0 };
 };

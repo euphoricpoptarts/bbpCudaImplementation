@@ -11,10 +11,9 @@
 #include <csignal>
 #include "kernel.cuh"
 #include "progressData.h"
-#include "bbpLauncher.hpp"
+#include "bbpLauncher.h"
 #include "digitData.hpp"
-#include "restClientDelegator.hpp"
-#include "progressData.cpp"
+#include "restClientDelegator.h"
 
 namespace chr = std::chrono;
 uint64 segments = 1;

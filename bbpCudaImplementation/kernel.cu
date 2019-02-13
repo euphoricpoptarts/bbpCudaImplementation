@@ -1,5 +1,8 @@
 #include "kernel.cuh"
 
+__device__  __constant__ const uint64 twoTo63Power = 0x8000000000000000;
+__device__ int printOnce = 0;
+
 __global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 stride);
 
 //adds all elements of addend and augend, storing in addend

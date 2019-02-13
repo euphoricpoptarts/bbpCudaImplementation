@@ -1,6 +1,5 @@
-#pragma once
 #include "progressData.h"
-#include "restClientDelegator.hpp"
+#include "restClientDelegator.h"
 
 class inertialDouble {
 private:
