@@ -43,6 +43,8 @@ private:
 
 	void blockForWork();
 
+	void sendResult(sJ result, double time);
+
 public:
 	sJ previousCache;
 	double previousTime;

@@ -40,7 +40,7 @@ class session : public std::enable_shared_from_this<session>
 	ip::tcp::resolver resolver_;
 	ip::tcp::socket socket_;
 	boost::beast::flat_buffer buffer_; // (Must persist between reads)
-	http::request<http::empty_body> req_;
+	http::request<http::string_body> req_;
 	http::response<http::string_body> res_;
 	char const* host;
 	char const* port;
@@ -66,16 +66,18 @@ public:
 
 	// Start the asynchronous operation
 	void
-		run(std::function<void(boost::property_tree::ptree)> processResponse)
+		run(std::function<void(boost::property_tree::ptree)> processResponse, std::string body, http::verb verb)
 	{
 		this->processResponse = processResponse;
 		// Set up an HTTP GET request message
 		req_.version(version);
-		req_.method(http::verb::get);
+		req_.method(verb);
 		req_.target(target);
 		req_.set(http::field::host, host);
 		req_.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
-
+		req_.body() = body;
+		req_.set(http::field::content_type, "application/json");
+		req_.set(http::field::content_length, body.size());
 		// Look up the domain name
 		resolver_.async_resolve(
 			host,
@@ -167,7 +169,7 @@ public:
 		// If we get here then the connection is closed gracefully
 	}
 
-	static void processRequest(progressData * data, boost::property_tree::ptree pt) {
+	static void processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, boost::property_tree::ptree pt) {
 		if (!pt.empty()) {
 			uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
 			uint64 segmentBegin = std::stoull(pt.get<std::string>("segmentStart"));
@@ -175,10 +177,13 @@ public:
 			digitData * workUnit = new digitData(sumEnd, exponent, segmentBegin, 0);
 			data->assignWork(workUnit);
 		}
+		else {
+			returnToSender->addRequestToQueue(data, controlledUuids);
+		}
 	}
 
 	static void processResult(boost::property_tree::ptree pt) {
-		if (!pt.empty()) {
+		/*if (!pt.empty()) {
 			for (auto iter = pt.begin(); iter != pt.end(); iter++) {
 				std::cout << iter->first << ":" << iter->second.get_value<std::string>() << std::endl;
 			}
@@ -186,8 +191,7 @@ public:
 		}
 		else {
 			std::cout << pt.get_value<std::string>() << std::endl;
-		}
-		std::cout << std::endl;
+		}*/
 	}
 };
 
@@ -211,15 +215,21 @@ void restClientDelegator::monitorQueues() {
 		for (segmentResult& result : resultsToSave) {
 			requestsMade = true;
 			std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processResult, std::placeholders::_1);
-			std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f);
+			std::stringstream body, endpoint;
+			body << "{ \"most-significant-word\": \"" << std::hex << std::setfill('0') << std::setw(16) << result.result.s[1];
+			body << "\", \"least-significant-word\": \"" << std::setw(16) << result.result.s[0];
+			body << "\", \"time\": \"" << std::hexfloat << std::setprecision(13) << result.totalTime << "\"}";
+			endpoint << "/pushSegment/" << result.digit->segmentBegin << "/" << result.digit->sumEnd << "/" << result.digit->startingExponent;
+			delete result.digit;
+			std::make_shared<session>(ioc, "127.0.0.1", "5000", endpoint.str().c_str(), 11)->run(f, body.str(), http::verb::put);
 		}
 		resultsToSave.clear();
 		resultsMtx.unlock();
 		requestsMtx.lock();
 		for (segmentRequest& request : requestsForWork) {
 			requestsMade = true;
-			std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processRequest, request.controller, std::placeholders::_1);
-			std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f);
+			std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processRequest, request.controller, request.controlledUuids, this, std::placeholders::_1);
+			std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f, "", http::verb::get);
 		}
 		requestsForWork.clear();
 		requestsMtx.unlock();

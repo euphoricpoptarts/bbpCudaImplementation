@@ -74,12 +74,14 @@ void progressData::requestWork() {
 	workRequested = true;
 }
 
+void progressData::sendResult(sJ result, double time) {
+	delegator->addResultToQueue(digit, result, time);
+}
+
 void progressData::blockForWork() {
 	std::mutex mtx;
 	std::unique_lock<std::mutex> ul(mtx);
 	cv.wait(ul, [this] {return this->workAssigned; });
-
-	if (digit != nullptr) delete digit;
 		
 	digit = nextWorkUnit;
 
@@ -170,7 +172,7 @@ int progressData::checkForProgressCache(uint64 totalSegments, uint64 segment) {
 
 void progressData::beginWorking() {
 	requestWork();
-	for (int i = 0; i < 10; i++) {
+	while (!stop) {
 
 		blockForWork();
 
@@ -204,6 +206,7 @@ void progressData::beginWorking() {
 		printf("result of work-unit is %016llX %016llX\n",
 			cudaResult.s[1], cudaResult.s[0]);
 		printf("Computed in %.8f seconds\n", time);
+		sendResult(cudaResult, time);
 		cudaStatus = cudaDeviceReset();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaDeviceReset failed!\n");
