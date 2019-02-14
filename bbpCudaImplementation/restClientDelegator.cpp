@@ -178,7 +178,8 @@ public:
 			data->assignWork(workUnit);
 		}
 		else {
-			returnToSender->addRequestToQueue(data, controlledUuids);
+			//no work is available right now, so wait 2 seconds and try again
+			returnToSender->addRequestToQueue(data, controlledUuids, std::chrono::high_resolution_clock::now() + std::chrono::seconds(2));
 		}
 	}
 
@@ -197,13 +198,25 @@ public:
 
 void restClientDelegator::addResultToQueue(digitData * digit, sJ result, double totalTime) {
 	resultsMtx.lock();
-	resultsToSave.push_back(segmentResult{ digit, result, totalTime });
+	resultsToSave.push(segmentResult{ digit, result, totalTime, std::chrono::high_resolution_clock::now() });
 	resultsMtx.unlock();
 }
 
 void restClientDelegator::addRequestToQueue(progressData * controller, std::list<std::string> controlledUuids) {
 	requestsMtx.lock();
-	requestsForWork.push_back(segmentRequest{ controller, controlledUuids });
+	requestsForWork.push(segmentRequest{ controller, controlledUuids, std::chrono::high_resolution_clock::now() });
+	requestsMtx.unlock();
+}
+
+void restClientDelegator::addResultToQueue(digitData * digit, sJ result, double totalTime, std::chrono::high_resolution_clock::time_point validAfter) {
+	resultsMtx.lock();
+	resultsToSave.push(segmentResult{ digit, result, totalTime, validAfter });
+	resultsMtx.unlock();
+}
+
+void restClientDelegator::addRequestToQueue(progressData * controller, std::list<std::string> controlledUuids, std::chrono::high_resolution_clock::time_point validAfter) {
+	requestsMtx.lock();
+	requestsForWork.push(segmentRequest{ controller, controlledUuids, validAfter });
 	requestsMtx.unlock();
 }
 
@@ -211,8 +224,10 @@ void restClientDelegator::monitorQueues() {
 	while (!stop) {
 		boost::asio::io_context ioc;
 		bool requestsMade = false;
+		std::chrono::high_resolution_clock::time_point validBefore = std::chrono::high_resolution_clock::now();
 		resultsMtx.lock();
-		for (segmentResult& result : resultsToSave) {
+		while(!resultsToSave.empty() && resultsToSave.top().timeValid < validBefore) {
+			const segmentResult& result = resultsToSave.top();
 			requestsMade = true;
 			std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processResult, std::placeholders::_1);
 			std::stringstream body, endpoint;
@@ -222,16 +237,17 @@ void restClientDelegator::monitorQueues() {
 			endpoint << "/pushSegment/" << result.digit->segmentBegin << "/" << result.digit->sumEnd << "/" << result.digit->startingExponent;
 			delete result.digit;
 			std::make_shared<session>(ioc, "127.0.0.1", "5000", endpoint.str().c_str(), 11)->run(f, body.str(), http::verb::put);
+			resultsToSave.pop();
 		}
-		resultsToSave.clear();
 		resultsMtx.unlock();
 		requestsMtx.lock();
-		for (segmentRequest& request : requestsForWork) {
+		while(!requestsForWork.empty() && requestsForWork.top().timeValid < validBefore) {
+			const segmentRequest& request = requestsForWork.top();
 			requestsMade = true;
 			std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processRequest, request.controller, request.controlledUuids, this, std::placeholders::_1);
 			std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f, "", http::verb::get);
+			requestsForWork.pop();
 		}
-		requestsForWork.clear();
 		requestsMtx.unlock();
 		if (requestsMade) ioc.run();
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
