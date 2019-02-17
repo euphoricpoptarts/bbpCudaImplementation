@@ -13,7 +13,7 @@
 #include <algorithm>
 #include "kernel.cuh"
 #include "bbpLauncher.h"
-#include "digitData.hpp"
+#include "digitData.h"
 
 namespace chr = std::chrono;
 

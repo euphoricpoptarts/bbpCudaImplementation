@@ -82,7 +82,9 @@ void progressData::blockForWork() {
 	std::mutex mtx;
 	std::unique_lock<std::mutex> ul(mtx);
 	cv.wait(ul, [this] {return this->workAssigned; });
-		
+	
+	//the restClientDelegator holds a pointer to the object pointed to before this assignment
+	//it is the restClientDelegator's responsibility to delete it
 	digit = nextWorkUnit;
 
 	nextWorkUnit = nullptr;
@@ -178,7 +180,6 @@ void progressData::beginWorking() {
 
 		this->previousTime = 0.0;
 		this->quit = 0;
-		this->digit->setupProgress();
 		std::list<std::pair<std::thread, bbpLauncher *>> threadLauncherPairs;
 		this->begin = chr::high_resolution_clock::now();
 		for (bbpLauncher* launcher : launchersTracked) {
@@ -207,10 +208,10 @@ void progressData::beginWorking() {
 			cudaResult.s[1], cudaResult.s[0]);
 		printf("Computed in %.8f seconds\n", time);
 		sendResult(cudaResult, time);
-		cudaStatus = cudaDeviceReset();
-		if (cudaStatus != cudaSuccess) {
+		//cudaStatus = cudaDeviceReset();
+		/*if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaDeviceReset failed!\n");
-		}
+		}*/
 		if (!this->workRequested) {
 			requestWork();
 		}
@@ -222,11 +223,11 @@ void progressData::progressCheck() {
 
 	std::deque<double> progressQ;
 	std::deque<chr::high_resolution_clock::time_point> timeQ;
-	int count = 0, otherCount = 0;
+	chr::high_resolution_clock::time_point lastProgOutput, lastServerProgUpdate;
+	lastProgOutput = chr::high_resolution_clock::now();
+	lastServerProgUpdate = lastProgOutput;
 	inertialDouble progressPerSecond;
 	while (!this->quit) {
-		count++;
-		otherCount++;
 
 		uint64 readCurrent = *(this->digit->currentProgress);
 
@@ -259,13 +260,14 @@ void progressData::progressCheck() {
 		double timeEst = (1.0 - progress) / (progressPerSecond.getValue());
 		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
 		double elapsedTime = this->previousTime + (chr::duration_cast<chr::duration<double>>(now - this->begin)).count();
-		//only print every 10th cycle or 0.1 seconds
-		if (count >= 10) {
-			count = 0;
-			printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond.getValue(), elapsedTime);
+		//only print every 0.1 seconds
+		if (chr::duration_cast<chr::duration<double>>(now - lastProgOutput).count() >= 0.1) {
+			lastProgOutput += chr::milliseconds(100);
+			//printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond.getValue(), elapsedTime);
 		}
-		if (otherCount >= 100) {
-			otherCount = 0;
+		//only update server every second
+		if (chr::duration_cast<chr::duration<double>>(now - lastServerProgUpdate).count() >= 1.0) {
+			lastServerProgUpdate += chr::seconds(1);
 			delegator->addProgressUpdateToQueue(this->digit, 100.0*progress, elapsedTime);
 		}
 

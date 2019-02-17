@@ -104,12 +104,13 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="bbpLauncher.cpp" />
+    <ClCompile Include="digitData.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="restClientDelegator.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bbpLauncher.h" />
-    <ClInclude Include="digitData.hpp" />
+    <ClInclude Include="digitData.h" />
     <ClInclude Include="kernel.cuh" />
     <ClInclude Include="progressData.h" />
     <ClCompile Include="progressData.cpp" />

@@ -19,7 +19,7 @@
 #include <sstream>
 #include <queue>
 #include <list>
-#include "digitData.hpp"
+#include "digitData.h"
 #include "kernel.cuh"
 #include "progressData.h"
 
@@ -168,6 +168,8 @@ public:
 			return failHandler();
 		}
 
+		if (res_.result_int() != 200) return failHandler();
+
 		boost::property_tree::ptree pt;
 
 		std::stringstream ss(res_.body());
@@ -249,6 +251,18 @@ void restClientDelegator::addProgressUpdateToQueue(digitData * digit, double pro
 	progressMtx.unlock();
 }
 
+std::string hexConvert(uint64 value) {
+	std::stringstream s;
+	s << std::hex << std::setfill('0') << std::setw(16) << value;
+	return s.str();
+}
+
+std::string hexConvert(double value) {
+	std::stringstream s;
+	s << std::hexfloat << std::setprecision(13) << value;
+	return s.str();
+}
+
 void restClientDelegator::processResultsQueue(boost::asio::io_context& ioc, std::chrono::high_resolution_clock::time_point validBefore) {
 	resultsMtx.lock();
 	while (!resultsToSave.empty() && resultsToSave.top().timeValid < validBefore) {
@@ -256,9 +270,11 @@ void restClientDelegator::processResultsQueue(boost::asio::io_context& ioc, std:
 		std::function<void(boost::property_tree::ptree)> successF = std::bind(&session::processResult, std::placeholders::_1);
 		std::function<void()> failF = std::bind(&session::resultFail, result.digit, result.result, result.totalTime, this);
 		std::stringstream body, endpoint;
-		body << "{ \"most-significant-word\": \"" << std::hex << std::setfill('0') << std::setw(16) << result.result.s[1];
-		body << "\", \"least-significant-word\": \"" << std::setw(16) << result.result.s[0];
-		body << "\", \"time\": \"" << std::hexfloat << std::setprecision(13) << result.totalTime << "\"}";
+		boost::property_tree::ptree pt;
+		pt.put("most-significant-word", hexConvert(result.result.s[1]));
+		pt.put("least-significant-word", hexConvert(result.result.s[0]));
+		pt.put("time", hexConvert(result.totalTime));
+		boost::property_tree::json_parser::write_json(body, pt);
 		endpoint << "/pushSegment/" << result.digit->segmentBegin << "/" << result.digit->sumEnd << "/" << result.digit->startingExponent;
 		delete result.digit;
 		std::make_shared<session>(ioc, "127.0.0.1", "5000", endpoint.str().c_str(), 11)->run(successF, failF, body.str(), http::verb::put);

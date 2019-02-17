@@ -12,7 +12,7 @@
 #include "kernel.cuh"
 #include "progressData.h"
 #include "bbpLauncher.h"
-#include "digitData.hpp"
+#include "digitData.h"
 #include "restClientDelegator.h"
 
 namespace chr = std::chrono;
@@ -193,15 +193,24 @@ int benchmark() {
 
 int controlViaClient(int totalGpus) {
 	restClientDelegator delegator;
-	progressData controller(&delegator);
+	progressData controller1(&delegator), controller2(&delegator);
+	std::vector<bbpLauncher*> launchers;
 	for (int i = 0; i < totalGpus; i++) {
-		controller.addLauncherToTrack(new bbpLauncher(i, threadCountPerBlock * blockCount));
+		launchers.push_back(new bbpLauncher(i, threadCountPerBlock * blockCount));
 	}
+	controller1.addLauncherToTrack(launchers[0]);
+	controller2.addLauncherToTrack(launchers[1]);
 	std::thread delegatorThread(&restClientDelegator::monitorQueues, &delegator);
 
-	controller.beginWorking();
+	std::thread worker1(&progressData::beginWorking, &controller1);
+	std::thread worker2(&progressData::beginWorking, &controller2);
 
+	worker1.join();
+	worker2.join();
 	delegatorThread.join();
+
+	for (bbpLauncher* launcher : launchers) delete launcher;
+	launchers.clear();
 
 	return 0;
 }

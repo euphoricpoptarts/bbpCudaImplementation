@@ -3,7 +3,7 @@
 #include <mutex>
 #include <sstream>
 #include <iomanip>
-#include "digitData.hpp"
+#include "digitData.h"
 #include "kernel.cuh"
 
 uint64 strideMultiplier = 0;

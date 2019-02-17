@@ -5,7 +5,10 @@
 
 //this class contains all needed data to define the work for a given segment of a digit
 //and to synchronize that work between multiple GPUs
-class digitData {
+class digitDataB {
+private:
+	static bool hostDeviceMapped;
+
 public:
 	uint64 sumEnd = 0;
 	uint64 startingExponent = 0;
@@ -67,22 +70,29 @@ public:
 		setupProgress();
 	}
 
+	~digitData() {
+		delete this->currentProgress;
+		cudaFree(this->deviceProg);
+	}
+
 	void setupProgress() {
 		//these variables are linked between host and device memory allowing each to communicate about progress
 		volatile uint64 *currProgHost;
 		uint64 * currProgDevice;
 
-		//allow device to map host memory for progress ticker
-		this->error = cudaSetDeviceFlags(cudaDeviceMapHost);
-		if (this->error != cudaSuccess) {
-			fprintf(stderr, "cudaSetDeviceFlags failed with error: %s\n", cudaGetErrorString(this->error));
-			return;
+		if (!hostDeviceMapped) {
+			this->error = deviceMapHost();
+			if (this->error != cudaSuccess) {
+				fprintf(stderr, "cudaSetDeviceFlags failed with error: %s\n", cudaGetErrorString(this->error));
+				return;
+			}
+			hostDeviceMapped = true;
 		}
 
 		// Allocate Host memory for progress ticker
 		this->error = cudaHostAlloc((void**)&currProgHost, sizeof(uint64), cudaHostAllocMapped);
 		if (this->error != cudaSuccess) {
-			fprintf(stderr, "cudaHostAalloc failed!");
+			fprintf(stderr, "cudaHostAlloc failed!");
 			return;
 		}
 
@@ -98,4 +108,12 @@ public:
 		this->deviceProg = currProgDevice;
 		this->currentProgress = currProgHost;
 	}
+
+	static cudaError_t deviceMapHost() {
+		//allow device to map host memory for progress ticker
+		cudaError_t error = cudaSetDeviceFlags(cudaDeviceMapHost);
+		return error;
+	}
 };
+
+bool digitData::hostDeviceMapped = false;

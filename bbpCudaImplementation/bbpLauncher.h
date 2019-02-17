@@ -2,7 +2,7 @@
 #include <mutex>
 #include <sstream>
 #include <deque>
-#include "digitData.hpp"
+#include "digitData.h"
 #include "kernel.cuh"
 
 extern uint64 strideMultiplier;
