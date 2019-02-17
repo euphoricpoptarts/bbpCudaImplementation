@@ -213,7 +213,6 @@ public:
 	}
 
 	static void resultFail(digitData * digit, sJ result, double totalTime, restClientDelegator * returnToSender) {
-		std::cout << "Somethings fucked" << std::endl;
 		returnToSender->addResultToQueue(digit, result, totalTime, std::chrono::high_resolution_clock::now() + std::chrono::seconds(2));
 	}
 
