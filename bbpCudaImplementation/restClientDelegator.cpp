@@ -9,6 +9,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
+#include <boost/asio/deadline_timer.hpp>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -39,6 +40,7 @@ class session : public std::enable_shared_from_this<session>
 {
 	ip::tcp::resolver resolver_;
 	ip::tcp::socket socket_;
+	boost::asio::deadline_timer timeout;
 	boost::beast::flat_buffer buffer_; // (Must persist between reads)
 	http::request<http::string_body> req_;
 	http::response<http::string_body> res_;
@@ -46,7 +48,8 @@ class session : public std::enable_shared_from_this<session>
 	char const* port;
 	char const* target;
 	int version;
-	std::function<void(boost::property_tree::ptree)> processResponse;
+	std::function<void(const boost::property_tree::ptree&)> processResponse;
+	std::function<void()> failHandler;
 
 public:
 	// Resolver and socket require an io_context
@@ -57,6 +60,7 @@ public:
 			int version)
 		: resolver_(ioc)
 		, socket_(ioc)
+		, timeout(ioc)
 		, host(host)
 		, port(port)
 		, target(target)
@@ -66,9 +70,10 @@ public:
 
 	// Start the asynchronous operation
 	void
-		run(std::function<void(boost::property_tree::ptree)> processResponse, std::string body, http::verb verb)
+		run(std::function<void(const boost::property_tree::ptree&)> processResponse, std::function<void()> failHandler, std::string body, http::verb verb)
 	{
 		this->processResponse = processResponse;
+		this->failHandler = failHandler;
 		// Set up an HTTP GET request message
 		req_.version(version);
 		req_.method(verb);
@@ -132,6 +137,13 @@ public:
 
 		if (ec)
 			return fail(ec, "write");
+		
+		//cancel the request and close the socket on timeout
+		timeout.expires_from_now(boost::posix_time::seconds(2));
+		timeout.async_wait([&](boost::system::error_code const &ec) {
+			if (ec == boost::asio::error::operation_aborted) return;
+			socket_.cancel();
+		});
 
 		// Receive the HTTP response
 		http::async_read(socket_, buffer_, res_,
@@ -147,10 +159,14 @@ public:
 			boost::system::error_code ec,
 			std::size_t bytes_transferred)
 	{
+		timeout.cancel();
 		boost::ignore_unused(bytes_transferred);
 
-		if (ec)
-			return fail(ec, "read");
+		// not_connected happens sometimes so don't bother reporting it.
+		if (ec && ec != boost::system::errc::not_connected) {
+			std::cout << ec.message() << std::endl;
+			return failHandler();
+		}
 
 		boost::property_tree::ptree pt;
 
@@ -162,14 +178,10 @@ public:
 		// Gracefully close the socket
 		socket_.shutdown(ip::tcp::socket::shutdown_both, ec);
 
-		// not_connected happens sometimes so don't bother reporting it.
-		if (ec && ec != boost::system::errc::not_connected)
-			return fail(ec, "shutdown");
-
 		// If we get here then the connection is closed gracefully
 	}
 
-	static void processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, boost::property_tree::ptree pt) {
+	static void processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, std::function<void()> noResultHandler, const boost::property_tree::ptree& pt) {
 		if (!pt.empty()) {
 			uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
 			uint64 segmentBegin = std::stoull(pt.get<std::string>("segmentStart"));
@@ -178,12 +190,11 @@ public:
 			data->assignWork(workUnit);
 		}
 		else {
-			//no work is available right now, so wait 2 seconds and try again
-			returnToSender->addRequestToQueue(data, controlledUuids, std::chrono::high_resolution_clock::now() + std::chrono::seconds(2));
+			noResultHandler();
 		}
 	}
 
-	static void processResult(boost::property_tree::ptree pt) {
+	static void processResult(const boost::property_tree::ptree& pt) {
 		/*if (!pt.empty()) {
 			for (auto iter = pt.begin(); iter != pt.end(); iter++) {
 				std::cout << iter->first << ":" << iter->second.get_value<std::string>() << std::endl;
@@ -194,6 +205,19 @@ public:
 			std::cout << pt.get_value<std::string>() << std::endl;
 		}*/
 	}
+
+	static void noopProcess(const boost::property_tree::ptree& pt) {}
+
+	static void requestFail(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender) {
+		returnToSender->addRequestToQueue(data, controlledUuids, std::chrono::high_resolution_clock::now() + std::chrono::seconds(2));
+	}
+
+	static void resultFail(digitData * digit, sJ result, double totalTime, restClientDelegator * returnToSender) {
+		std::cout << "Somethings fucked" << std::endl;
+		returnToSender->addResultToQueue(digit, result, totalTime, std::chrono::high_resolution_clock::now() + std::chrono::seconds(2));
+	}
+
+	static void noopFail() {}
 };
 
 void restClientDelegator::addResultToQueue(digitData * digit, sJ result, double totalTime) {
@@ -220,36 +244,64 @@ void restClientDelegator::addRequestToQueue(progressData * controller, std::list
 	requestsMtx.unlock();
 }
 
+void restClientDelegator::addProgressUpdateToQueue(digitData * digit, double progress, double timeElapsed) {
+	progressMtx.lock();
+	progressUpdates.push(progressUpdate{digit, progress, timeElapsed, std::chrono::high_resolution_clock::now() });
+	progressMtx.unlock();
+}
+
+void restClientDelegator::processResultsQueue(boost::asio::io_context& ioc, std::chrono::high_resolution_clock::time_point validBefore) {
+	resultsMtx.lock();
+	while (!resultsToSave.empty() && resultsToSave.top().timeValid < validBefore) {
+		const segmentResult& result = resultsToSave.top();
+		std::function<void(boost::property_tree::ptree)> successF = std::bind(&session::processResult, std::placeholders::_1);
+		std::function<void()> failF = std::bind(&session::resultFail, result.digit, result.result, result.totalTime, this);
+		std::stringstream body, endpoint;
+		body << "{ \"most-significant-word\": \"" << std::hex << std::setfill('0') << std::setw(16) << result.result.s[1];
+		body << "\", \"least-significant-word\": \"" << std::setw(16) << result.result.s[0];
+		body << "\", \"time\": \"" << std::hexfloat << std::setprecision(13) << result.totalTime << "\"}";
+		endpoint << "/pushSegment/" << result.digit->segmentBegin << "/" << result.digit->sumEnd << "/" << result.digit->startingExponent;
+		delete result.digit;
+		std::make_shared<session>(ioc, "127.0.0.1", "5000", endpoint.str().c_str(), 11)->run(successF, failF, body.str(), http::verb::put);
+		resultsToSave.pop();
+	}
+	resultsMtx.unlock();
+}
+
+void restClientDelegator::processRequestsQueue(boost::asio::io_context& ioc, std::chrono::high_resolution_clock::time_point validBefore) {
+	requestsMtx.lock();
+	while (!requestsForWork.empty() && requestsForWork.top().timeValid < validBefore) {
+		const segmentRequest& request = requestsForWork.top();
+		std::function<void()> failF = std::bind(&session::requestFail, request.controller, request.controlledUuids, this);
+		std::function<void(boost::property_tree::ptree)> successF = std::bind(&session::processRequest, request.controller, request.controlledUuids, this, failF, std::placeholders::_1);
+		std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(successF, failF, "", http::verb::get);
+		requestsForWork.pop();
+	}
+	requestsMtx.unlock();
+}
+
+void restClientDelegator::processProgressUpdatesQueue(boost::asio::io_context& ioc, std::chrono::high_resolution_clock::time_point validBefore) {
+	progressMtx.lock();
+	while (!progressUpdates.empty() && progressUpdates.top().timeValid < validBefore) {
+		const progressUpdate& progress = progressUpdates.top();
+		std::function<void()> failF = std::bind(&session::noopFail);
+		std::function<void(boost::property_tree::ptree)> successF = std::bind(&session::noopProcess, std::placeholders::_1);
+		std::stringstream endpoint;
+		endpoint << "/extendSegmentReservation/" << progress.digit->segmentBegin << "/" << progress.digit->sumEnd << "/" << progress.digit->startingExponent;
+		std::make_shared<session>(ioc, "127.0.0.1", "5000", endpoint.str().c_str(), 11)->run(successF, failF, "", http::verb::get);
+		progressUpdates.pop();
+	}
+	progressMtx.unlock();
+}
+
 void restClientDelegator::monitorQueues() {
+	boost::asio::io_context ioc;
 	while (!stop) {
-		boost::asio::io_context ioc;
-		bool requestsMade = false;
 		std::chrono::high_resolution_clock::time_point validBefore = std::chrono::high_resolution_clock::now();
-		resultsMtx.lock();
-		while(!resultsToSave.empty() && resultsToSave.top().timeValid < validBefore) {
-			const segmentResult& result = resultsToSave.top();
-			requestsMade = true;
-			std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processResult, std::placeholders::_1);
-			std::stringstream body, endpoint;
-			body << "{ \"most-significant-word\": \"" << std::hex << std::setfill('0') << std::setw(16) << result.result.s[1];
-			body << "\", \"least-significant-word\": \"" << std::setw(16) << result.result.s[0];
-			body << "\", \"time\": \"" << std::hexfloat << std::setprecision(13) << result.totalTime << "\"}";
-			endpoint << "/pushSegment/" << result.digit->segmentBegin << "/" << result.digit->sumEnd << "/" << result.digit->startingExponent;
-			delete result.digit;
-			std::make_shared<session>(ioc, "127.0.0.1", "5000", endpoint.str().c_str(), 11)->run(f, body.str(), http::verb::put);
-			resultsToSave.pop();
-		}
-		resultsMtx.unlock();
-		requestsMtx.lock();
-		while(!requestsForWork.empty() && requestsForWork.top().timeValid < validBefore) {
-			const segmentRequest& request = requestsForWork.top();
-			requestsMade = true;
-			std::function<void(boost::property_tree::ptree)> f = std::bind(&session::processRequest, request.controller, request.controlledUuids, this, std::placeholders::_1);
-			std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(f, "", http::verb::get);
-			requestsForWork.pop();
-		}
-		requestsMtx.unlock();
-		if (requestsMade) ioc.run();
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		processResultsQueue(ioc, validBefore);
+		processRequestsQueue(ioc, validBefore);
+		processProgressUpdatesQueue(ioc, validBefore);
+		ioc.poll();//process any handlers currently ready on the context (using this instead of ::run avoids getting stuck waiting on a timeout to expire for a dead request)
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));//rest between checking the queues for work
 	}
 }

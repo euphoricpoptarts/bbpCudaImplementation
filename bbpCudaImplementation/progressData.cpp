@@ -222,10 +222,11 @@ void progressData::progressCheck() {
 
 	std::deque<double> progressQ;
 	std::deque<chr::high_resolution_clock::time_point> timeQ;
-	int count = 0;
+	int count = 0, otherCount = 0;
 	inertialDouble progressPerSecond;
 	while (!this->quit) {
 		count++;
+		otherCount++;
 
 		uint64 readCurrent = *(this->digit->currentProgress);
 
@@ -259,9 +260,13 @@ void progressData::progressCheck() {
 		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
 		double elapsedTime = this->previousTime + (chr::duration_cast<chr::duration<double>>(now - this->begin)).count();
 		//only print every 10th cycle or 0.1 seconds
-		if (count == 10) {
+		if (count >= 10) {
 			count = 0;
 			printf("Current progress is %3.3f%%. Estimated total runtime remaining is %8.3f seconds. Avg rate is %1.5f%%. Time elapsed is %8.3f seconds.\n", 100.0*progress, timeEst, 100.0*progressPerSecond.getValue(), elapsedTime);
+		}
+		if (otherCount >= 100) {
+			otherCount = 0;
+			delegator->addProgressUpdateToQueue(this->digit, 100.0*progress, elapsedTime);
 		}
 
 		bool resultsReady = true;
