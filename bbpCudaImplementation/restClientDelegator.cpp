@@ -83,6 +83,14 @@ public:
 		req_.body() = body;
 		req_.set(http::field::content_type, "application/json");
 		req_.set(http::field::content_length, body.size());
+
+		//cancel the request and close the socket on timeout
+		timeout.expires_from_now(boost::posix_time::seconds(2));
+		timeout.async_wait([&](boost::system::error_code const &ec) {
+			if (ec == boost::asio::error::operation_aborted) return;
+			socket_.cancel();
+		});
+
 		// Look up the domain name
 		resolver_.async_resolve(
 			host,
@@ -116,8 +124,9 @@ public:
 	void
 		on_connect(boost::system::error_code ec)
 	{
-		if (ec)
-			return fail(ec, "connect");
+		if (ec) {
+			return failHandler();
+		}
 
 		// Send the HTTP request to the remote host
 		http::async_write(socket_, req_,
@@ -137,13 +146,6 @@ public:
 
 		if (ec)
 			return fail(ec, "write");
-		
-		//cancel the request and close the socket on timeout
-		timeout.expires_from_now(boost::posix_time::seconds(2));
-		timeout.async_wait([&](boost::system::error_code const &ec) {
-			if (ec == boost::asio::error::operation_aborted) return;
-			socket_.cancel();
-		});
 
 		// Receive the HTTP response
 		http::async_read(socket_, buffer_, res_,
