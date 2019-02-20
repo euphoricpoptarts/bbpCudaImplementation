@@ -1,7 +1,5 @@
 #include "restClientDelegator.h"
 
-//modified from boost examples: https://www.boost.org/doc/libs/1_69_0/libs/beast/example/http/client/async/http_client_async.cpp
-
 #include <boost/beast/core.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/asio/connect.hpp>
@@ -21,18 +19,10 @@
 #include "kernel.cuh"
 #include "progressData.h"
 
-namespace ip = boost::asio::ip;       // from <boost/asio/ip/tcp.hpp>
-namespace http = boost::beast::http;    // from <boost/beast/http.hpp>
+namespace ip = boost::asio::ip;
+namespace http = boost::beast::http;
 
-										//------------------------------------------------------------------------------
-
-										// Report a failure
-void
-fail(boost::system::error_code ec, char const* what)
-{
-	std::cerr << what << ": " << ec.message() << "\n";
-}
-
+//modified from boost examples: https://www.boost.org/doc/libs/1_69_0/libs/beast/example/http/client/async/http_client_async.cpp
 // Performs an HTTP GET and prints the response
 class session : public std::enable_shared_from_this<session>
 {
@@ -106,7 +96,7 @@ public:
 			ip::tcp::resolver::results_type results)
 	{
 		if (ec)
-			return fail(ec, "resolve");
+			return;
 
 		// Make the connection on the IP address we get from a lookup
 		boost::asio::async_connect(
@@ -143,7 +133,7 @@ public:
 		boost::ignore_unused(bytes_transferred);
 
 		if (ec)
-			return fail(ec, "write");
+			return;
 
 		// Receive the HTTP response
 		http::async_read(socket_, buffer_, res_,
