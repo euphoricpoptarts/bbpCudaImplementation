@@ -70,12 +70,12 @@ int progressData::reloadFromCache(std::string pToFile) {
 void progressData::requestWork() {
 	std::list<std::string> controlledUuids;
 	for (bbpLauncher* launcher : launchersTracked) controlledUuids.push_back(launcher->getUuid());
-	delegator->addRequestToQueue(this, controlledUuids);
+	delegator->addWorkGetToQueue(this, controlledUuids);
 	workRequested = true;
 }
 
 void progressData::sendResult(sJ result, double time) {
-	delegator->addResultToQueue(digit, result, time);
+	delegator->addResultPutToQueue(digit, result, time);
 }
 
 void progressData::blockForWork() {
@@ -268,7 +268,7 @@ void progressData::progressCheck() {
 		//only update server every second
 		if (chr::duration_cast<chr::duration<double>>(now - lastServerProgUpdate).count() >= 1.0) {
 			lastServerProgUpdate += chr::seconds(1);
-			delegator->addProgressUpdateToQueue(this->digit, 100.0*progress, elapsedTime);
+			delegator->addProgressPutToQueue(this->digit, 100.0*progress, elapsedTime);
 		}
 
 		bool resultsReady = true;

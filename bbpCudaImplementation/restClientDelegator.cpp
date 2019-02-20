@@ -3,11 +3,9 @@
 //modified from boost examples: https://www.boost.org/doc/libs/1_69_0/libs/beast/example/http/client/async/http_client_async.cpp
 
 #include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
-#include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/asio/deadline_timer.hpp>
 #include <functional>
@@ -185,16 +183,17 @@ public:
 		// If we get here then the connection is closed gracefully
 	}
 
-	static void processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, std::function<void()> noResultHandler, const boost::property_tree::ptree& pt) {
+	static void processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt) {
 		if (!pt.empty()) {
 			uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
 			uint64 segmentBegin = std::stoull(pt.get<std::string>("segmentStart"));
 			uint64 exponent = std::stoull(pt.get<std::string>("exponent"));
 			digitData * workUnit = new digitData(sumEnd, exponent, segmentBegin, 0);
 			data->assignWork(workUnit);
+			delete call;
 		}
 		else {
-			noResultHandler();
+			call->failHandle();
 		}
 	}
 
@@ -212,46 +211,8 @@ public:
 
 	static void noopProcess(const boost::property_tree::ptree& pt) {}
 
-	static void requestFail(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender) {
-		returnToSender->addRequestToQueue(data, controlledUuids, std::chrono::high_resolution_clock::now() + std::chrono::seconds(2));
-	}
-
-	static void resultFail(digitData * digit, sJ result, double totalTime, restClientDelegator * returnToSender) {
-		returnToSender->addResultToQueue(digit, result, totalTime, std::chrono::high_resolution_clock::now() + std::chrono::seconds(2));
-	}
-
 	static void noopFail() {}
 };
-
-void restClientDelegator::addResultToQueue(digitData * digit, sJ result, double totalTime) {
-	resultsMtx.lock();
-	resultsToSave.push(segmentResult{ digit, result, totalTime, std::chrono::high_resolution_clock::now() });
-	resultsMtx.unlock();
-}
-
-void restClientDelegator::addRequestToQueue(progressData * controller, std::list<std::string> controlledUuids) {
-	requestsMtx.lock();
-	requestsForWork.push(segmentRequest{ controller, controlledUuids, std::chrono::high_resolution_clock::now() });
-	requestsMtx.unlock();
-}
-
-void restClientDelegator::addResultToQueue(digitData * digit, sJ result, double totalTime, std::chrono::high_resolution_clock::time_point validAfter) {
-	resultsMtx.lock();
-	resultsToSave.push(segmentResult{ digit, result, totalTime, validAfter });
-	resultsMtx.unlock();
-}
-
-void restClientDelegator::addRequestToQueue(progressData * controller, std::list<std::string> controlledUuids, std::chrono::high_resolution_clock::time_point validAfter) {
-	requestsMtx.lock();
-	requestsForWork.push(segmentRequest{ controller, controlledUuids, validAfter });
-	requestsMtx.unlock();
-}
-
-void restClientDelegator::addProgressUpdateToQueue(digitData * digit, double progress, double timeElapsed) {
-	progressMtx.lock();
-	progressUpdates.push(progressUpdate{digit, progress, timeElapsed, std::chrono::high_resolution_clock::now() });
-	progressMtx.unlock();
-}
 
 std::string hexConvert(uint64 value) {
 	std::stringstream s;
@@ -265,59 +226,85 @@ std::string hexConvert(double value) {
 	return s.str();
 }
 
-void restClientDelegator::processResultsQueue(boost::asio::io_context& ioc, std::chrono::high_resolution_clock::time_point validBefore) {
-	resultsMtx.lock();
-	while (!resultsToSave.empty() && resultsToSave.top().timeValid < validBefore) {
-		const segmentResult& result = resultsToSave.top();
-		std::function<void(boost::property_tree::ptree)> successF = std::bind(&session::processResult, std::placeholders::_1);
-		std::function<void()> failF = std::bind(&session::resultFail, result.digit, result.result, result.totalTime, this);
-		std::stringstream body, endpoint;
-		boost::property_tree::ptree pt;
-		pt.put("most-significant-word", hexConvert(result.result.s[1]));
-		pt.put("least-significant-word", hexConvert(result.result.s[0]));
-		pt.put("time", hexConvert(result.totalTime));
-		boost::property_tree::json_parser::write_json(body, pt);
-		endpoint << "/pushSegment/" << result.digit->segmentBegin << "/" << result.digit->sumEnd << "/" << result.digit->startingExponent;
-		delete result.digit;
-		std::make_shared<session>(ioc, "127.0.0.1", "5000", endpoint.str().c_str(), 11)->run(successF, failF, body.str(), http::verb::put);
-		resultsToSave.pop();
-	}
-	resultsMtx.unlock();
+void restClientDelegator::retryOnFail(apiCall * toRetry) {
+	queueMtx.lock();
+	toRetry->timeValid = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	apiCallQueue.push(toRetry);
+	queueMtx.unlock();
 }
 
-void restClientDelegator::processRequestsQueue(boost::asio::io_context& ioc, std::chrono::high_resolution_clock::time_point validBefore) {
-	requestsMtx.lock();
-	while (!requestsForWork.empty() && requestsForWork.top().timeValid < validBefore) {
-		const segmentRequest& request = requestsForWork.top();
-		std::function<void()> failF = std::bind(&session::requestFail, request.controller, request.controlledUuids, this);
-		std::function<void(boost::property_tree::ptree)> successF = std::bind(&session::processRequest, request.controller, request.controlledUuids, this, failF, std::placeholders::_1);
-		std::make_shared<session>(ioc, "127.0.0.1", "5000", "/getSegment", 11)->run(successF, failF, "", http::verb::get);
-		requestsForWork.pop();
-	}
-	requestsMtx.unlock();
+void restClientDelegator::noopFail(apiCall * failed) {
+	delete failed;
 }
 
-void restClientDelegator::processProgressUpdatesQueue(boost::asio::io_context& ioc, std::chrono::high_resolution_clock::time_point validBefore) {
-	progressMtx.lock();
-	while (!progressUpdates.empty() && progressUpdates.top().timeValid < validBefore) {
-		const progressUpdate& progress = progressUpdates.top();
-		std::function<void()> failF = std::bind(&session::noopFail);
-		std::function<void(boost::property_tree::ptree)> successF = std::bind(&session::noopProcess, std::placeholders::_1);
-		std::stringstream endpoint;
-		endpoint << "/extendSegmentReservation/" << progress.digit->segmentBegin << "/" << progress.digit->sumEnd << "/" << progress.digit->startingExponent;
-		std::make_shared<session>(ioc, "127.0.0.1", "5000", endpoint.str().c_str(), 11)->run(successF, failF, "", http::verb::get);
-		progressUpdates.pop();
+void restClientDelegator::noopSuccess(apiCall * succeeded, boost::property_tree::ptree pt) {
+	delete succeeded;
+}
+
+void restClientDelegator::addResultPutToQueue(digitData * workSegment, sJ result, double totalTime) {
+	std::stringstream body, endpoint;
+	boost::property_tree::ptree pt;
+	pt.put("most-significant-word", hexConvert(result.s[1]));
+	pt.put("least-significant-word", hexConvert(result.s[0]));
+	pt.put("time", hexConvert(totalTime));
+	boost::property_tree::json_parser::write_json(body, pt);
+	endpoint << "/pushSegment/" << workSegment->segmentBegin << "/" << workSegment->sumEnd << "/" << workSegment->startingExponent;
+	delete workSegment;
+	apiCall * call = new apiCall();
+	call->successHandle = std::bind(&session::processResult, std::placeholders::_1);
+	call->body = body.str();
+	call->endpoint = endpoint.str();
+	call->verb = http::verb::put;
+	call->timeValid = std::chrono::steady_clock::now();
+	call->failHandle = std::bind(&restClientDelegator::retryOnFail, this, call);
+	queueMtx.lock();
+	apiCallQueue.push(call);
+	queueMtx.unlock();
+}
+
+void restClientDelegator::addWorkGetToQueue(progressData * controller, std::list<std::string> controlledUuids) {
+	apiCall * call = new apiCall();
+	call->endpoint = "/getSegment";
+	call->body = "";
+	call->verb = http::verb::get;
+	call->failHandle = std::bind(&restClientDelegator::retryOnFail, this, call);
+	call->timeValid = std::chrono::steady_clock::now();
+	call->successHandle = std::bind(&session::processRequest, controller, controlledUuids, this, call, std::placeholders::_1);
+	queueMtx.lock();
+	apiCallQueue.push(call);
+	queueMtx.unlock();
+}
+
+void restClientDelegator::addProgressPutToQueue(digitData * workSegment, double progress, double timeElapsed) {
+	std::stringstream endpoint;
+	endpoint << "/extendSegmentReservation/" << workSegment->segmentBegin << "/" << workSegment->sumEnd << "/" << workSegment->startingExponent;
+	apiCall * call = new apiCall();
+	call->successHandle = std::bind(&restClientDelegator::noopSuccess, call, std::placeholders::_1);
+	call->body = "";
+	call->endpoint = endpoint.str();
+	call->verb = http::verb::put;
+	call->timeValid = std::chrono::steady_clock::now();
+	call->failHandle = std::bind(&restClientDelegator::noopFail, call);
+	queueMtx.lock();
+	apiCallQueue.push(call);
+	queueMtx.unlock();
+}
+
+void restClientDelegator::processQueue(boost::asio::io_context& ioc, std::chrono::high_resolution_clock::time_point validBefore) {
+	queueMtx.lock();
+	while (!apiCallQueue.empty() && apiCallQueue.top()->timeValid < validBefore) {
+		const apiCall * call = apiCallQueue.top();
+		std::make_shared<session>(ioc, "127.0.0.1", "5000", call->endpoint.c_str(), 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
+		apiCallQueue.pop();
 	}
-	progressMtx.unlock();
+	queueMtx.unlock();
 }
 
 void restClientDelegator::monitorQueues() {
 	boost::asio::io_context ioc;
 	while (!stop) {
 		std::chrono::high_resolution_clock::time_point validBefore = std::chrono::high_resolution_clock::now();
-		processResultsQueue(ioc, validBefore);
-		processRequestsQueue(ioc, validBefore);
-		processProgressUpdatesQueue(ioc, validBefore);
+		processQueue(ioc, validBefore);
 		ioc.poll();//process any handlers currently ready on the context (using this instead of ::run avoids getting stuck waiting on a timeout to expire for a dead request)
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));//rest between checking the queues for work
 	}
