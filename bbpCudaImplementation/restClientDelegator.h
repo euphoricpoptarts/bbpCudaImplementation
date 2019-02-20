@@ -28,10 +28,11 @@ class restClientDelegator
 private:
 	boost::heap::priority_queue<apiCall*, boost::heap::compare<apiCall>> apiCallQueue;
 	std::mutex queueMtx;
-	void processQueue(boost::asio::io_context& ioc, std::chrono::high_resolution_clock::time_point validBefore);
+	void processQueue(boost::asio::io_context& ioc, const std::chrono::high_resolution_clock::time_point validBefore);
 	void retryOnFail(apiCall * toRetry);
 	static void noopFail(apiCall * failed);
-	static void noopSuccess(apiCall * succeeded, boost::property_tree::ptree pt);
+	static void noopSuccess(apiCall * succeeded, const boost::property_tree::ptree pt);
+	static void processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt);
 
 public:
 	void addResultPutToQueue(digitData * digit, sJ result, double totalTime);

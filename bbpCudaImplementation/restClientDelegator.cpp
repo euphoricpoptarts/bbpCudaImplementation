@@ -183,35 +183,6 @@ public:
 		// If we get here then the connection is closed gracefully
 	}
 
-	static void processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt) {
-		if (!pt.empty()) {
-			uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
-			uint64 segmentBegin = std::stoull(pt.get<std::string>("segmentStart"));
-			uint64 exponent = std::stoull(pt.get<std::string>("exponent"));
-			digitData * workUnit = new digitData(sumEnd, exponent, segmentBegin, 0);
-			data->assignWork(workUnit);
-			delete call;
-		}
-		else {
-			call->failHandle();
-		}
-	}
-
-	static void processResult(const boost::property_tree::ptree& pt) {
-		/*if (!pt.empty()) {
-			for (auto iter = pt.begin(); iter != pt.end(); iter++) {
-				std::cout << iter->first << ":" << iter->second.get_value<std::string>() << std::endl;
-			}
-			std::cout << "Getting by value .get('segment'): " << pt.get<std::string>("segment") << std::endl;
-		}
-		else {
-			std::cout << pt.get_value<std::string>() << std::endl;
-		}*/
-	}
-
-	static void noopProcess(const boost::property_tree::ptree& pt) {}
-
-	static void noopFail() {}
 };
 
 std::string hexConvert(uint64 value) {
@@ -237,7 +208,7 @@ void restClientDelegator::noopFail(apiCall * failed) {
 	delete failed;
 }
 
-void restClientDelegator::noopSuccess(apiCall * succeeded, boost::property_tree::ptree pt) {
+void restClientDelegator::noopSuccess(apiCall * succeeded, const boost::property_tree::ptree pt) {
 	delete succeeded;
 }
 
@@ -251,7 +222,7 @@ void restClientDelegator::addResultPutToQueue(digitData * workSegment, sJ result
 	endpoint << "/pushSegment/" << workSegment->segmentBegin << "/" << workSegment->sumEnd << "/" << workSegment->startingExponent;
 	delete workSegment;
 	apiCall * call = new apiCall();
-	call->successHandle = std::bind(&session::processResult, std::placeholders::_1);
+	call->successHandle = std::bind(&restClientDelegator::noopSuccess, call, std::placeholders::_1);
 	call->body = body.str();
 	call->endpoint = endpoint.str();
 	call->verb = http::verb::put;
@@ -262,6 +233,20 @@ void restClientDelegator::addResultPutToQueue(digitData * workSegment, sJ result
 	queueMtx.unlock();
 }
 
+void restClientDelegator::processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt) {
+	if (!pt.empty()) {
+		uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
+		uint64 segmentBegin = std::stoull(pt.get<std::string>("segmentStart"));
+		uint64 exponent = std::stoull(pt.get<std::string>("exponent"));
+		digitData * workUnit = new digitData(sumEnd, exponent, segmentBegin, 0);
+		data->assignWork(workUnit);
+		delete call;
+	}
+	else {
+		call->failHandle();
+	}
+}
+
 void restClientDelegator::addWorkGetToQueue(progressData * controller, std::list<std::string> controlledUuids) {
 	apiCall * call = new apiCall();
 	call->endpoint = "/getSegment";
@@ -269,7 +254,7 @@ void restClientDelegator::addWorkGetToQueue(progressData * controller, std::list
 	call->verb = http::verb::get;
 	call->failHandle = std::bind(&restClientDelegator::retryOnFail, this, call);
 	call->timeValid = std::chrono::steady_clock::now();
-	call->successHandle = std::bind(&session::processRequest, controller, controlledUuids, this, call, std::placeholders::_1);
+	call->successHandle = std::bind(&restClientDelegator::processRequest, controller, controlledUuids, this, call, std::placeholders::_1);
 	queueMtx.lock();
 	apiCallQueue.push(call);
 	queueMtx.unlock();
@@ -290,7 +275,7 @@ void restClientDelegator::addProgressPutToQueue(digitData * workSegment, double 
 	queueMtx.unlock();
 }
 
-void restClientDelegator::processQueue(boost::asio::io_context& ioc, std::chrono::high_resolution_clock::time_point validBefore) {
+void restClientDelegator::processQueue(boost::asio::io_context& ioc, const std::chrono::high_resolution_clock::time_point validBefore) {
 	queueMtx.lock();
 	while (!apiCallQueue.empty() && apiCallQueue.top()->timeValid < validBefore) {
 		const apiCall * call = apiCallQueue.top();
