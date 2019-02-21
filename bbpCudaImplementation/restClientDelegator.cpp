@@ -202,27 +202,6 @@ void restClientDelegator::noopSuccess(apiCall * succeeded, const boost::property
 	delete succeeded;
 }
 
-void restClientDelegator::addResultPutToQueue(digitData * workSegment, sJ result, double totalTime) {
-	std::stringstream body, endpoint;
-	boost::property_tree::ptree pt;
-	pt.put("most-significant-word", hexConvert(result.s[1]));
-	pt.put("least-significant-word", hexConvert(result.s[0]));
-	pt.put("time", hexConvert(totalTime));
-	boost::property_tree::json_parser::write_json(body, pt);
-	endpoint << "/pushSegment/" << workSegment->segmentBegin << "/" << workSegment->sumEnd << "/" << workSegment->startingExponent;
-	delete workSegment;
-	apiCall * call = new apiCall();
-	call->successHandle = std::bind(&restClientDelegator::noopSuccess, call, std::placeholders::_1);
-	call->body = body.str();
-	call->endpoint = endpoint.str();
-	call->verb = http::verb::put;
-	call->timeValid = std::chrono::steady_clock::now();
-	call->failHandle = std::bind(&restClientDelegator::retryOnFail, this, call);
-	queueMtx.lock();
-	apiCallQueue.push(call);
-	queueMtx.unlock();
-}
-
 void restClientDelegator::processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt) {
 	if (!pt.empty()) {
 		uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
@@ -235,6 +214,26 @@ void restClientDelegator::processRequest(progressData * data, std::list<std::str
 	else {
 		call->failHandle();
 	}
+}
+
+void restClientDelegator::addResultPutToQueue(digitData * workSegment, sJ result, double totalTime) {
+	std::stringstream body, endpoint;
+	boost::property_tree::ptree pt;
+	pt.put("most-significant-word", hexConvert(result.s[1]));
+	pt.put("least-significant-word", hexConvert(result.s[0]));
+	pt.put("time", hexConvert(totalTime));
+	boost::property_tree::json_parser::write_json(body, pt);
+	endpoint << "/pushSegment/" << workSegment->segmentBegin << "/" << workSegment->sumEnd << "/" << workSegment->startingExponent;
+	apiCall * call = new apiCall();
+	call->successHandle = std::bind(&restClientDelegator::noopSuccess, call, std::placeholders::_1);
+	call->body = body.str();
+	call->endpoint = endpoint.str();
+	call->verb = http::verb::put;
+	call->timeValid = std::chrono::steady_clock::now();
+	call->failHandle = std::bind(&restClientDelegator::retryOnFail, this, call);
+	queueMtx.lock();
+	apiCallQueue.push(call);
+	queueMtx.unlock();
 }
 
 void restClientDelegator::addWorkGetToQueue(progressData * controller, std::list<std::string> controlledUuids) {
@@ -250,12 +249,33 @@ void restClientDelegator::addWorkGetToQueue(progressData * controller, std::list
 	queueMtx.unlock();
 }
 
-void restClientDelegator::addProgressPutToQueue(digitData * workSegment, double progress, double timeElapsed) {
+void restClientDelegator::addReservationExtensionPutToQueue(digitData * workSegment, double progress, double timeElapsed) {
 	std::stringstream endpoint;
 	endpoint << "/extendSegmentReservation/" << workSegment->segmentBegin << "/" << workSegment->sumEnd << "/" << workSegment->startingExponent;
 	apiCall * call = new apiCall();
 	call->successHandle = std::bind(&restClientDelegator::noopSuccess, call, std::placeholders::_1);
 	call->body = "";
+	call->endpoint = endpoint.str();
+	call->verb = http::verb::put;
+	call->timeValid = std::chrono::steady_clock::now();
+	call->failHandle = std::bind(&restClientDelegator::noopFail, call);
+	queueMtx.lock();
+	apiCallQueue.push(call);
+	queueMtx.unlock();
+}
+
+void restClientDelegator::addProgressUpdatePutToQueue(digitData * workSegment, sJ intermediateResult, uint64 computedUpTo, double timeElapsed) {
+	std::stringstream body, endpoint;
+	boost::property_tree::ptree pt;
+	pt.put("most-significant-word", hexConvert(intermediateResult.s[1]));
+	pt.put("least-significant-word", hexConvert(intermediateResult.s[0]));
+	pt.put("continue-from", hexConvert(computedUpTo));
+	pt.put("time", hexConvert(timeElapsed));
+	boost::property_tree::json_parser::write_json(body, pt);
+	endpoint << "/progressUpdate/" << workSegment->segmentBegin << "/" << workSegment->sumEnd << "/" << workSegment->startingExponent;
+	apiCall * call = new apiCall();
+	call->successHandle = std::bind(&restClientDelegator::noopSuccess, call, std::placeholders::_1);
+	call->body = body.str();
 	call->endpoint = endpoint.str();
 	call->verb = http::verb::put;
 	call->timeValid = std::chrono::steady_clock::now();

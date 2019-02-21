@@ -76,6 +76,7 @@ void progressData::requestWork() {
 
 void progressData::sendResult(sJ result, double time) {
 	delegator->addResultPutToQueue(digit, result, time);
+	delete digit;
 }
 
 void progressData::blockForWork() {
@@ -268,7 +269,7 @@ void progressData::progressCheck() {
 		//only update server every second
 		if (chr::duration_cast<chr::duration<double>>(now - lastServerProgUpdate).count() >= 1.0) {
 			lastServerProgUpdate += chr::seconds(1);
-			delegator->addProgressPutToQueue(this->digit, 100.0*progress, elapsedTime);
+			delegator->addReservationExtensionPutToQueue(this->digit, 100.0*progress, elapsedTime);
 		}
 
 		bool resultsReady = true;
@@ -295,7 +296,10 @@ void progressData::progressCheck() {
 				compareCacheEnd = true;
 			}
 
-			if (!cacheMisaligned) writeCache(contProcess, currStatus, elapsedTime);
+			if (!cacheMisaligned) {
+				delegator->addProgressUpdatePutToQueue(digit, currStatus, contProcess, elapsedTime);
+				writeCache(contProcess, currStatus, elapsedTime);
+			}
 		}
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));

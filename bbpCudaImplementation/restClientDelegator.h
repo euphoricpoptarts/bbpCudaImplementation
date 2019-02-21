@@ -37,6 +37,7 @@ private:
 public:
 	void addResultPutToQueue(digitData * digit, sJ result, double totalTime);
 	void addWorkGetToQueue(progressData * controller, std::list<std::string> controlledUuids);
-	void addProgressPutToQueue(digitData * digit, double progress, double timeElapsed);
+	void addReservationExtensionPutToQueue(digitData * digit, double progress, double timeElapsed);
+	void addProgressUpdatePutToQueue(digitData * digit, sJ intermediateResult, uint64 computedUpTo, double timeElapsed);
 	void monitorQueues();
 };
