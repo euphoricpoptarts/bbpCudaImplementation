@@ -33,7 +33,7 @@ class session : public std::enable_shared_from_this<session>
 	http::request<http::string_body> req_;
 	http::response<http::string_body> res_;
 	char const* host;
-	char const* port;
+	int port;
 	char const* target;
 	int version;
 	std::function<void(const boost::property_tree::ptree&)> processResponse;
@@ -43,7 +43,7 @@ public:
 	// Resolver and socket require an io_context
 	explicit
 		session(boost::asio::io_context& ioc, char const* host,
-			char const* port,
+			int port,
 			char const* target,
 			int version)
 		: resolver_(ioc)
@@ -80,34 +80,42 @@ public:
 		});
 
 		// Look up the domain name
-		resolver_.async_resolve(
+		/*resolver_.async_resolve(
 			host,
 			port,
 			std::bind(
 				&session::on_resolve,
 				shared_from_this(),
 				std::placeholders::_1,
-				std::placeholders::_2));
-	}
+				std::placeholders::_2));*/
+		ip::tcp::endpoint endpoint(ip::address::from_string(host), port);
 
-	void
-		on_resolve(
-			boost::system::error_code ec,
-			ip::tcp::resolver::results_type results)
-	{
-		if (ec)
-			return;
-
-		// Make the connection on the IP address we get from a lookup
-		boost::asio::async_connect(
-			socket_,
-			results.begin(),
-			results.end(),
+		socket_.async_connect(
+			endpoint,
 			std::bind(
 				&session::on_connect,
 				shared_from_this(),
 				std::placeholders::_1));
 	}
+
+	//void
+	//	on_resolve(
+	//		boost::system::error_code ec,
+	//		ip::tcp::resolver::results_type results)
+	//{
+	//	if (ec)
+	//		return;
+
+	//	// Make the connection on the IP address we get from a lookup
+	//	boost::asio::async_connect(
+	//		socket_,
+	//		results.begin(),
+	//		results.end(),
+	//		std::bind(
+	//			&session::on_connect,
+	//			shared_from_this(),
+	//			std::placeholders::_1));
+	//}
 
 	void
 		on_connect(boost::system::error_code ec)
@@ -289,7 +297,7 @@ void restClientDelegator::processQueue(boost::asio::io_context& ioc, const std::
 	queueMtx.lock();
 	while (!apiCallQueue.empty() && apiCallQueue.top()->timeValid < validBefore) {
 		const apiCall * call = apiCallQueue.top();
-		std::make_shared<session>(ioc, "127.0.0.1", "5000", call->endpoint.c_str(), 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
+		std::make_shared<session>(ioc, "127.0.0.1", 5000, call->endpoint.c_str(), 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
 		apiCallQueue.pop();
 	}
 	queueMtx.unlock();
