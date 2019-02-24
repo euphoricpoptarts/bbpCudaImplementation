@@ -32,7 +32,7 @@ private:
 	void retryOnFail(apiCall * toRetry);
 	static void noopFail(apiCall * failed);
 	static void noopSuccess(apiCall * succeeded, const boost::property_tree::ptree pt);
-	static void processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt);
+	static void processWorkGetResponse(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt);
 
 public:
 	void addResultPutToQueue(digitData * digit, sJ result, double totalTime);

@@ -210,12 +210,13 @@ void restClientDelegator::noopSuccess(apiCall * succeeded, const boost::property
 	delete succeeded;
 }
 
-void restClientDelegator::processRequest(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt) {
+void restClientDelegator::processWorkGetResponse(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt) {
 	if (!pt.empty()) {
 		uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
 		uint64 segmentBegin = std::stoull(pt.get<std::string>("segmentStart"));
 		uint64 exponent = std::stoull(pt.get<std::string>("exponent"));
-		digitData * workUnit = new digitData(sumEnd, exponent, segmentBegin, 0);
+		uint64 remoteId = std::stoull(pt.get<std::string>("id"));
+		digitData * workUnit = new digitData(sumEnd, exponent, segmentBegin, remoteId);
 		data->assignWork(workUnit);
 		delete call;
 	}
@@ -231,7 +232,7 @@ void restClientDelegator::addResultPutToQueue(digitData * workSegment, sJ result
 	pt.put("least-significant-word", hexConvert(result.s[0]));
 	pt.put("time", hexConvert(totalTime));
 	boost::property_tree::json_parser::write_json(body, pt);
-	endpoint << "/pushSegment/" << workSegment->segmentBegin << "/" << workSegment->sumEnd << "/" << workSegment->startingExponent;
+	endpoint << "/pushSegment/" << workSegment->remoteId;
 	apiCall * call = new apiCall();
 	call->successHandle = std::bind(&restClientDelegator::noopSuccess, call, std::placeholders::_1);
 	call->body = body.str();
@@ -251,7 +252,7 @@ void restClientDelegator::addWorkGetToQueue(progressData * controller, std::list
 	call->verb = http::verb::get;
 	call->failHandle = std::bind(&restClientDelegator::retryOnFail, this, call);
 	call->timeValid = std::chrono::steady_clock::now();
-	call->successHandle = std::bind(&restClientDelegator::processRequest, controller, controlledUuids, this, call, std::placeholders::_1);
+	call->successHandle = std::bind(&restClientDelegator::processWorkGetResponse, controller, controlledUuids, this, call, std::placeholders::_1);
 	queueMtx.lock();
 	apiCallQueue.push(call);
 	queueMtx.unlock();
@@ -259,7 +260,7 @@ void restClientDelegator::addWorkGetToQueue(progressData * controller, std::list
 
 void restClientDelegator::addReservationExtensionPutToQueue(digitData * workSegment, double progress, double timeElapsed) {
 	std::stringstream endpoint;
-	endpoint << "/extendSegmentReservation/" << workSegment->segmentBegin << "/" << workSegment->sumEnd << "/" << workSegment->startingExponent;
+	endpoint << "/extendSegmentReservation/" << workSegment->remoteId;
 	apiCall * call = new apiCall();
 	call->successHandle = std::bind(&restClientDelegator::noopSuccess, call, std::placeholders::_1);
 	call->body = "";
@@ -280,7 +281,7 @@ void restClientDelegator::addProgressUpdatePutToQueue(digitData * workSegment, s
 	pt.put("continue-from", hexConvert(computedUpTo));
 	pt.put("time", hexConvert(timeElapsed));
 	boost::property_tree::json_parser::write_json(body, pt);
-	endpoint << "/progressUpdate/" << workSegment->segmentBegin << "/" << workSegment->sumEnd << "/" << workSegment->startingExponent;
+	endpoint << "/progressUpdate/" << workSegment->remoteId;
 	apiCall * call = new apiCall();
 	call->successHandle = std::bind(&restClientDelegator::noopSuccess, call, std::placeholders::_1);
 	call->body = body.str();

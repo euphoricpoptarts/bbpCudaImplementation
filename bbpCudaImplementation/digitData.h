@@ -14,6 +14,7 @@ public:
 	uint64 startingExponent = 0;
 	uint64 sumBegin = 0;
 	uint64 segmentBegin = 0;
+	uint64 remoteId = 0;
 	std::atomic<uint64> launchCount;
 	cudaError_t error;
 	volatile uint64 * currentProgress = nullptr;
@@ -21,7 +22,7 @@ public:
 
 	digitData(const digitData& toCopy);
 
-	digitData(uint64 sumEnd, uint64 startingExponent, uint64 segmentBegin, int imdifferent);
+	digitData(uint64 sumEnd, uint64 startingExponent, uint64 segmentBegin, uint64 remoteId);
 
 	digitData(uint64 digitInput, uint64 segments, uint64 segmentNumber);
 

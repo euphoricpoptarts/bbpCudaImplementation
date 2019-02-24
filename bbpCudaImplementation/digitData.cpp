@@ -11,8 +11,9 @@ digitData::digitData(const digitData& toCopy) {
 	this->segmentBegin = toCopy.segmentBegin;
 }
 
-digitData::digitData(uint64 sumEnd, uint64 startingExponent, uint64 segmentBegin, int imdifferent)
-	: sumEnd(sumEnd), startingExponent(startingExponent), sumBegin(segmentBegin), segmentBegin(segmentBegin) {
+//constructor used by rest-client
+digitData::digitData(uint64 sumEnd, uint64 startingExponent, uint64 segmentBegin, uint64 remoteId)
+	: sumEnd(sumEnd), startingExponent(startingExponent), sumBegin(segmentBegin), segmentBegin(segmentBegin), remoteId(remoteId) {
 	std::atomic_init(&this->launchCount, 0);
 	setupProgress();
 }
