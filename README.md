@@ -44,7 +44,7 @@ Note that only the first ~25-27 digits of each are correct.
 
 10 Quadrillionth Hex-digit: 9077 E016 4B9C 613F D6C7 F170 CAE7 263E  
 Note: This computation was performed in 40 segments using 2 different machines.  
-The listed time reflects the cumulative time between both machines.
+The listed time reflects the cumulative time between both machines.  
 Time: 1500081.034 seconds  
 Hardware: (Rig 1) 2x RTX 2080 Ti FTW3 (Factory Clocks)  
 (Rig 2) 4x RTX 2080 Ti Black (Factory Clocks)
