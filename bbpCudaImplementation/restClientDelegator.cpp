@@ -76,7 +76,7 @@ public:
 		timeout.expires_from_now(boost::posix_time::seconds(2));
 		timeout.async_wait([&](boost::system::error_code const &ec) {
 			if (ec == boost::asio::error::operation_aborted) return;
-			socket_.cancel();
+			socket_.close();
 		});
 
 		// Look up the domain name
