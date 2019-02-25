@@ -10,6 +10,9 @@ The main thread dispatches an individual thread to control each GPU, and another
 This thread awaits the completion of the GPU threads and then tells the progress tracking thread to stop.  
 The user can specify a benchmarking run in the configuration files, which can run a number of trials for a given digit of pi and for a range of block counts.
 
+Optionally, the program may run under the control of a RESTful service. This service is still under construction.  
+The rest-client in this program is built using the Boost Asio and Beast libraries.
+
 ## Algorithms and Novelty of Implementation
 The algorithm in use has been adapted to closely match the one presented in Daisuke Takahashi's paper: http://plouffe.fr/simon/1-s2.0-S0167819118300334-main.pdf  
 
@@ -29,7 +32,7 @@ application.properties specifies the following:
 strideMultiplier: number of sum terms computed by each thread  
 blockCount: blockCount  
 primaryGpu: 1 for a delay between kernel launches, 0 for no delay  
-benchmarkBlockCounts: 1 to benchmark a range of blockCounts, 0 to access primary pi calculation  
+controlType: 0 to input which digit of pi to calculate manually or use command line options; 1 to cede control to restful service; 2 to run benchmark  
 benchmarkTrials: number of trials for each blockCount in benchmark  
 benchmarkTarget: digit of pi to use for benchmark  
 benchmarkStartingBlockCount: start of benchmark range (inclusive)  
@@ -38,6 +41,13 @@ benchmarkTotalIncrements: number of times to increment blockCount and rerun benc
 
 ## Digits Calculated and Times
 Note that only the first ~25-27 digits of each are correct.
+
+10 Quadrillionth Hex-digit: 9077 E016 4B9C 613F D6C7 F170 CAE7 263E  
+Note: This computation was performed in 40 segments using 2 different machines.  
+The listed time reflects the cumulative time between both machines.
+Time: 1500081.034 seconds  
+Hardware: (Rig 1) 2x RTX 2080 Ti FTW3 (Factory Clocks)  
+(Rig 2) 4x RTX 2080 Ti Black (Factory Clocks)
 
 1 Quadrillionth Hex-digit: 8353 CB3F 7F0C 9ACC FA9A A215 F309 DCF2  
 Note: The final two hex-digits of this computation are not the expected value, due to hardware errors from overclocking.

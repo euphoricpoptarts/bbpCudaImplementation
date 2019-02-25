@@ -19,14 +19,14 @@ namespace chr = std::chrono;
 uint64 segments = 1;
 int startBlocks, blocksIncrement, incrementLimit;
 uint64 benchmarkTarget;
-int benchmarkBlockCounts;
+int controlType;
 int numRuns;
 
 const struct {
 	const std::string STRIDEMULTIPLIER = "strideMultiplier",
 		BLOCKCOUNT = "blockCount",
 		PRIMARYGPU = "primaryGpu",
-		BENCHMARKBLOCKCOUNTS = "benchmarkBlockCounts",
+		CONTROLTYPE = "controlType",
 		BENCHMARKTRIALS = "benchmarkTrials",
 		BENCHMARKTARGET = "benchmarkTarget",
 		BENCHMARKSTARTINGBLOCKCOUNT = "benchmarkStartingBlockCount",
@@ -132,7 +132,7 @@ int loadProperties() {
 		propertyNames.STRIDEMULTIPLIER,
 		propertyNames.BLOCKCOUNT,
 		propertyNames.PRIMARYGPU,
-		propertyNames.BENCHMARKBLOCKCOUNTS,
+		propertyNames.CONTROLTYPE,
 		propertyNames.BENCHMARKTRIALS,
 		propertyNames.BENCHMARKTARGET,
 		propertyNames.BENCHMARKSTARTINGBLOCKCOUNT,
@@ -152,7 +152,7 @@ int loadProperties() {
 	strideMultiplier = std::stoull(properties.at(propertyNames.STRIDEMULTIPLIER));
 	blockCount = std::stoi(properties.at(propertyNames.BLOCKCOUNT));
 	primaryGpu = std::stoi(properties.at(propertyNames.PRIMARYGPU));
-	benchmarkBlockCounts = std::stoi(properties.at(propertyNames.BENCHMARKBLOCKCOUNTS));
+	controlType = std::stoi(properties.at(propertyNames.CONTROLTYPE));
 	numRuns = std::stoi(properties.at(propertyNames.BENCHMARKTRIALS));
 	benchmarkTarget = std::stoull(properties.at(propertyNames.BENCHMARKTARGET));
 	startBlocks = std::stoi(properties.at(propertyNames.BENCHMARKSTARTINGBLOCKCOUNT));
@@ -233,11 +233,10 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "No GPUs detected in system!\n");
 		return 1;
 	}
-	if (benchmarkBlockCounts) {
+	if (controlType == 2) {
 		return benchmark();
 	}
-
-	if (totalGpus == 2) {
+	else if (controlType == 1) {
 		return controlViaClient(totalGpus);
 	}
 
