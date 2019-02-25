@@ -15,27 +15,27 @@ int primaryGpu = 0;
 const uint64 cachePeriod = 20000;
 bool stop = false;
 
-void bbpLauncher::cacheProgress(uint64 cacheEnd, sJ cacheData) {
+void bbpLauncher::cacheProgress(uint64 cacheEnd, uint128 cacheData) {
 	cacheMutex.lock();
 	cacheQueue.emplace_back(cacheData, cacheEnd);
 	cacheMutex.unlock();
 }
 
 //standard tree-based parallel reduce
-cudaError_t bbpLauncher::reduceSJ(sJ *c, unsigned int size) {
+cudaError_t bbpLauncher::reduceSJ(uint128 *c, unsigned int size) {
 	cudaError_t cudaStatus;
 	while (size > 1) {
 		int nextSize = (size + 1) >> 1;
 
 		//size is odd
-		if (size & 1) reduceSJPassThrough(32, 32, c, nextSize, nextSize - 1);
+		if (size & 1) reduceUint128ArrayPassThrough(32, 32, c, nextSize, nextSize - 1);
 		//size is even
-		else reduceSJPassThrough(32, 32, c, nextSize, nextSize);
+		else reduceUint128ArrayPassThrough(32, 32, c, nextSize, nextSize);
 
 		// Check for any errors launching the kernel
 		cudaStatus = cudaGetLastError();
 		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "reduceSJKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+			fprintf(stderr, "reduceUint128ArrayKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
 			return cudaStatus;
 		}
 
@@ -43,7 +43,7 @@ cudaError_t bbpLauncher::reduceSJ(sJ *c, unsigned int size) {
 		// any errors encountered during the launch.
 		cudaStatus = cudaDeviceSynchronize();
 		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching reduceSJKernel!\n", cudaStatus);
+			fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching reduceUint128ArrayKernel!\n", cudaStatus);
 			return cudaStatus;
 		}
 
@@ -94,13 +94,13 @@ cudaError_t bbpLauncher::getError() {
 	return this->error;
 }
 
-sJ bbpLauncher::getResult() {
+uint128 bbpLauncher::getResult() {
 	return this->output;
 }
 
-std::pair<sJ, uint64> bbpLauncher::getCacheFront() {
+std::pair<uint128, uint64> bbpLauncher::getCacheFront() {
 	cacheMutex.lock();
-	std::pair<sJ, uint64> frontOfQ = cacheQueue.front();
+	std::pair<uint128, uint64> frontOfQ = cacheQueue.front();
 	cacheQueue.pop_front();
 	cacheMutex.unlock();
 	return frontOfQ;
@@ -118,9 +118,9 @@ bool bbpLauncher::isComplete() {
 void bbpLauncher::launch()
 {
 	this->complete = false;
-	sJ *dev_c = 0;
-	sJ* c = new sJ[1];
-	sJ *dev_ex = 0;
+	uint128 *dev_c = 0;
+	uint128* c = new uint128[1];
+	uint128 *dev_ex = 0;
 
 	cudaError_t cudaStatus;
 
@@ -136,14 +136,14 @@ void bbpLauncher::launch()
 	}
 
 	// Allocate GPU buffer for temp vector
-	cudaStatus = cudaMalloc((void**)&dev_ex, this->size * sizeof(sJ) * 7);
+	cudaStatus = cudaMalloc((void**)&dev_ex, this->size * sizeof(uint128) * 7);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
 
 	// Allocate GPU buffer for output vector
-	cudaStatus = cudaMalloc((void**)&dev_c, this->size * sizeof(sJ) * 7);
+	cudaStatus = cudaMalloc((void**)&dev_c, this->size * sizeof(uint128) * 7);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
@@ -174,7 +174,7 @@ void bbpLauncher::launch()
 			lastWrite += cachePeriod;
 
 			//copy current results into temp array to reduce and update status
-			cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(sJ) * 7, cudaMemcpyDeviceToDevice);
+			cudaStatus = cudaMemcpy(dev_ex, dev_c, size * sizeof(uint128) * 7, cudaMemcpyDeviceToDevice);
 			if (cudaStatus != cudaSuccess) {
 				fprintf(stderr, "cudaMemcpy failed in status update!\n");
 				goto Error;
@@ -187,7 +187,7 @@ void bbpLauncher::launch()
 			}
 
 			// Copy result (reduced into first element) from GPU buffer to host memory.
-			cudaStatus = cudaMemcpy(c, dev_ex, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
+			cudaStatus = cudaMemcpy(c, dev_ex, 1 * sizeof(uint128), cudaMemcpyDeviceToHost);
 			if (cudaStatus != cudaSuccess) {
 				fprintf(stderr, "cudaMemcpy failed in status update!\n");
 				goto Error;
@@ -219,7 +219,7 @@ void bbpLauncher::launch()
 	}
 
 	// Copy result (reduced into first element) from GPU buffer to host memory.
-	cudaStatus = cudaMemcpy(c, dev_c, 1 * sizeof(sJ), cudaMemcpyDeviceToHost);
+	cudaStatus = cudaMemcpy(c, dev_c, 1 * sizeof(uint128), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!\n");
 		goto Error;

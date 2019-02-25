@@ -3,13 +3,13 @@
 __device__  __constant__ const uint64 twoTo63Power = 0x8000000000000000;
 __device__ int printOnce = 0;
 
-__global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 stride);
+__global__ void bbpKernel(uint128 *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 stride);
 
 //adds all elements of addend and augend, storing in addend
-__device__ __host__ void sJAdd(sJ* addend, const sJ* augend) {
-	addend->s[0] += augend->s[0];
-	addend->s[1] += augend->s[1];
-	if (addend->s[0] < augend->s[0]) addend->s[1]++;
+__device__ __host__ void sJAdd(uint128* addend, const uint128* augend) {
+	addend->lsw += augend->lsw;
+	addend->msw += augend->msw;
+	if (addend->lsw < augend->lsw) addend->msw++;
 }
 
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of squaring a 64 bit number
@@ -139,18 +139,18 @@ __device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 
 #endif
 }
 
-__device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result, int negative) {
+__device__ void fixedPointDivisionExact(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint128 * result, int negative) {
 	if (!r) return;
 
 	uint64 q0 = (-r)*mPrime;
 	uint64 q1 = -(1LLU) - __umul64hi(mod, q0);
 	q1 *= mPrime;
 
-	if(!negative) add128Bit(result[1], result[0], q1, q0);
-	else sub128Bit(result[1], result[0], q1, q0);
+	if(!negative) add128Bit(result->msw, result->lsw, q1, q0);
+	else sub128Bit(result->msw, result->lsw, q1, q0);
 }
 
-__device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint64 * result, int shift, int negative) {
+__device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint64 & r, const uint64 & mPrime, uint128 * result, int shift, int negative) {
 	if (!r) return;
 
 	uint64 q0 = (-r)*mPrime;
@@ -162,8 +162,8 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 	else q0 = q0 + (q1 >> (shift - 64));
 	q1 >>= shift;
 
-	if (!negative) add128Bit(result[1], result[0], q1, q0);
-	else sub128Bit(result[1], result[0], q1, q0);
+	if (!negative) add128Bit(result->msw, result->lsw, q1, q0);
+	else sub128Bit(result->msw, result->lsw, q1, q0);
 }
 
 //using left-to-right binary exponentiation
@@ -171,7 +171,7 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 //uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
 //montgomery multiplication suggested by njuffa
 //adds the 128 bit number representing ((2^exp)%mod)/mod to result
-__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint64 * result, const int & negative, uint64 montgomeryStart, int shiftToLittleBit) {
+__device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint128 * result, const int & negative, uint64 montgomeryStart, int shiftToLittleBit) {
 	uint64 output = 1;
 	uint64 mPrime;
 
@@ -247,7 +247,7 @@ __device__ __noinline__ void fastModApproximator(uint64 endMod, uint64 startExp,
 }
 
 //computes strideMultiplier # of summation terms
-__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 startingMod, uint64 modCoefficient, int negative, sJ* output, uint64* progress) {
+__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 startingMod, uint64 modCoefficient, int negative, uint128* output, uint64* progress) {
 
 	//depending on the size of the smallest mod a thread will operate on
 	//these variables determine which optimizations are viable
@@ -276,7 +276,7 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 			subtractModIfMoreThanMod(montgomeryStart, mod);
 		}
 
-		modExpLeftToRight(exp, mod, output->s, negative, montgomeryStart, shiftToLittleBit);
+		modExpLeftToRight(exp, mod, output, negative, montgomeryStart, shiftToLittleBit);
 
 		negative ^= 1;
 		montgomeryStart += div;
@@ -292,7 +292,7 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 //determine from thread and block position which parts of summation to calculate
 //only one of the threads per kernel (AND ONLY ON GPU0) will report progress
 //stride over all parts of summation in bbp formula where k <= startingExponent (between all threads of all launches)
-__global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 strideMultiplier)
+__global__ void bbpKernel(uint128 *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 strideMultiplier)
 {
 	int gridId = threadIdx.x + blockDim.x * blockIdx.x;
 	int divider = (blockDim.x * gridDim.x) / 7;
@@ -342,7 +342,7 @@ __global__ void bbpKernel(sJ *c, uint64 *progress, uint64 startingExponent, uint
 }
 
 //stride over current leaves of reduce tree
-__global__ void reduceSJKernel(sJ *c, int offset, int stop) {
+__global__ void reduceUint128ArrayKernel(uint128 *c, int offset, int stop) {
 	int stride = blockDim.x * gridDim.x;
 	int i = threadIdx.x + blockDim.x * blockIdx.x;
 	while (i < stop) {
@@ -352,10 +352,10 @@ __global__ void reduceSJKernel(sJ *c, int offset, int stop) {
 	}
 }
 
-void bbpPassThrough(int threads, int blocks, sJ *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 strideMultiplier) {
+void bbpPassThrough(int threads, int blocks, uint128 *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 strideMultiplier) {
 	bbpKernel << <blocks, threads >> > (c, progress, startingExponent, begin, end, strideMultiplier);
 }
 
-void reduceSJPassThrough(int threads, int blocks, sJ *c, int offset, int stop) {
-	reduceSJKernel<<<blocks, threads>>>(c, offset, stop);
+void reduceUint128ArrayPassThrough(int threads, int blocks, uint128 *c, int offset, int stop) {
+	reduceUint128ArrayKernel<<<blocks, threads>>>(c, offset, stop);
 }

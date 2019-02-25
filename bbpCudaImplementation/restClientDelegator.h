@@ -35,9 +35,9 @@ private:
 	static void processWorkGetResponse(progressData * data, std::list<std::string> controlledUuids, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt);
 
 public:
-	void addResultPutToQueue(digitData * digit, sJ result, double totalTime);
+	void addResultPutToQueue(digitData * digit, uint128 result, double totalTime);
 	void addWorkGetToQueue(progressData * controller, std::list<std::string> controlledUuids);
 	void addReservationExtensionPutToQueue(digitData * digit, double progress, double timeElapsed);
-	void addProgressUpdatePutToQueue(digitData * digit, sJ intermediateResult, uint64 computedUpTo, double timeElapsed);
+	void addProgressUpdatePutToQueue(digitData * digit, uint128 intermediateResult, uint64 computedUpTo, double timeElapsed);
 	void monitorQueues();
 };

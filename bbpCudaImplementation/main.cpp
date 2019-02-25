@@ -275,7 +275,7 @@ int main(int argc, char** argv) {
 		handles[i] = std::thread(&bbpLauncher::launch, gpuData[i]);
 	}
 
-	sJ cudaResult = prog.previousCache;
+	uint128 cudaResult = prog.previousCache;
 
 	for (int i = 0; i < totalGpus; i++) {
 
@@ -287,7 +287,7 @@ int main(int argc, char** argv) {
 			stop = true;
 		}
 
-		sJ output = gpuData[i]->getResult();
+		uint128 output = gpuData[i]->getResult();
 
 		//sum results from gpus
 		sJAdd(&cudaResult, &output);
@@ -307,7 +307,7 @@ int main(int argc, char** argv) {
 		chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
 
 		printf("pi at hexadecimal digit %llu is %016llX %016llX\n",
-			hexDigitPosition, cudaResult.s[1], cudaResult.s[0]);
+			hexDigitPosition, cudaResult.msw, cudaResult.lsw);
 
 		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
 		double totalTime = prog.previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count();
@@ -319,7 +319,8 @@ int main(int argc, char** argv) {
 		std::ofstream completedF(buffer, std::ios::out);
 		if (completedF.is_open()) {
 			completedF << std::hex << std::setfill('0');
-			for (int i = 0; i < 2; i++) completedF << std::setw(16) << cudaResult.s[i] << std::endl;
+			completedF << std::setw(16) << cudaResult.lsw << std::endl;
+			completedF << std::setw(16) << cudaResult.msw << std::endl;
 			completedF << std::hexfloat << std::setprecision(13) << totalTime << std::endl;
 			completedF.close();
 		}

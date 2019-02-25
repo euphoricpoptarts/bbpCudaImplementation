@@ -225,11 +225,11 @@ void restClientDelegator::processWorkGetResponse(progressData * data, std::list<
 	}
 }
 
-void restClientDelegator::addResultPutToQueue(digitData * workSegment, sJ result, double totalTime) {
+void restClientDelegator::addResultPutToQueue(digitData * workSegment, uint128 result, double totalTime) {
 	std::stringstream body, endpoint;
 	boost::property_tree::ptree pt;
-	pt.put("most-significant-word", hexConvert(result.s[1]));
-	pt.put("least-significant-word", hexConvert(result.s[0]));
+	pt.put("most-significant-word", hexConvert(result.msw));
+	pt.put("least-significant-word", hexConvert(result.lsw));
 	pt.put("time", hexConvert(totalTime));
 	boost::property_tree::json_parser::write_json(body, pt);
 	endpoint << "/pushSegment/" << workSegment->remoteId;
@@ -273,11 +273,11 @@ void restClientDelegator::addReservationExtensionPutToQueue(digitData * workSegm
 	queueMtx.unlock();
 }
 
-void restClientDelegator::addProgressUpdatePutToQueue(digitData * workSegment, sJ intermediateResult, uint64 computedUpTo, double timeElapsed) {
+void restClientDelegator::addProgressUpdatePutToQueue(digitData * workSegment, uint128 intermediateResult, uint64 computedUpTo, double timeElapsed) {
 	std::stringstream body, endpoint;
 	boost::property_tree::ptree pt;
-	pt.put("most-significant-word", hexConvert(intermediateResult.s[1]));
-	pt.put("least-significant-word", hexConvert(intermediateResult.s[0]));
+	pt.put("most-significant-word", hexConvert(intermediateResult.msw));
+	pt.put("least-significant-word", hexConvert(intermediateResult.lsw));
 	pt.put("continue-from", hexConvert(computedUpTo));
 	pt.put("time", hexConvert(timeElapsed));
 	boost::property_tree::json_parser::write_json(body, pt);

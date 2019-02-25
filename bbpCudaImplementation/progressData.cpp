@@ -20,7 +20,7 @@ public:
 	}
 };
 
-void progressData::writeCache(uint64 cacheEnd, sJ cacheData, double elapsedTime) {
+void progressData::writeCache(uint64 cacheEnd, uint128 cacheData, double elapsedTime) {
 	char buffer[256];
 
 	//minus 1 because cache range is [segmentBegin, contProcess)
@@ -35,7 +35,8 @@ void progressData::writeCache(uint64 cacheEnd, sJ cacheData, double elapsedTime)
 		//setprecision is required by msvc++ to output full precision doubles in hex
 		//although the documentation of hexfloat clearly specifies hexfloat should ignore setprecision https://en.cppreference.com/w/cpp/io/manip/fixed
 		cacheF << std::setprecision(13) << std::hexfloat << elapsedTime << std::endl;
-		for (int i = 0; i < 2; i++) cacheF << std::hex << cacheData.s[i] << std::endl;
+		cacheF << std::hex << cacheData.lsw << std::endl;
+		cacheF << std::hex << cacheData.msw << std::endl;
 		cacheF.close();
 	}
 	else {
@@ -56,7 +57,8 @@ int progressData::reloadFromCache(std::string pToFile) {
 	bool readSuccess = true;
 	readSuccess = readSuccess && (cacheF >> std::dec >> this->digit->sumBegin);
 	readSuccess = readSuccess && (cacheF >> std::hexfloat >> this->previousTime);
-	for (int i = 0; i < 2; i++) readSuccess = readSuccess && (cacheF >> std::hex >> this->previousCache.s[i]);
+	readSuccess = readSuccess && (cacheF >> std::hex >> this->previousCache.lsw);
+	readSuccess = readSuccess && (cacheF >> std::hex >> this->previousCache.msw);
 
 	cacheF.close();
 
@@ -74,7 +76,7 @@ void progressData::requestWork() {
 	workRequested = true;
 }
 
-void progressData::sendResult(sJ result, double time) {
+void progressData::sendResult(uint128 result, double time) {
 	delegator->addResultPutToQueue(digit, result, time);
 	delete digit;
 }
@@ -104,6 +106,7 @@ progressData::progressData(digitData * data)
 progressData::progressData(restClientDelegator * delegator)
 {
 	this->delegator = delegator;
+	this->hasDelegator = true;
 }
 
 void progressData::setReloadPolicy(int choice) {
@@ -188,7 +191,7 @@ void progressData::beginWorking() {
 			threadLauncherPairs.emplace_back(std::thread(&bbpLauncher::launch, launcher), launcher);
 		}
 		progressCheck();
-		sJ cudaResult;
+		uint128 cudaResult;
 		cudaError_t cudaStatus;
 
 		for (std::pair<std::thread, bbpLauncher *>& pair : threadLauncherPairs) {
@@ -199,14 +202,14 @@ void progressData::beginWorking() {
 				fprintf(stderr, "cudaBbpLaunch failed on gpu %s!\n", pair.second->getUuid().c_str());
 			}
 
-			sJ output = pair.second->getResult();
+			uint128 output = pair.second->getResult();
 
 			//sum results from gpus
 			sJAdd(&cudaResult, &output);
 		}
 		double time = (chr::duration_cast<chr::duration<double>>(chr::high_resolution_clock::now() - this->begin)).count();
 		printf("result of work-unit is %016llX %016llX\n",
-			cudaResult.s[1], cudaResult.s[0]);
+			cudaResult.msw, cudaResult.lsw);
 		printf("Computed in %.8f seconds\n", time);
 		sendResult(cudaResult, time);
 		//cudaStatus = cudaDeviceReset();
@@ -269,7 +272,7 @@ void progressData::progressCheck() {
 		//only update server every second
 		if (chr::duration_cast<chr::duration<double>>(now - lastServerProgUpdate).count() >= 1.0) {
 			lastServerProgUpdate += chr::seconds(1);
-			delegator->addReservationExtensionPutToQueue(this->digit, 100.0*progress, elapsedTime);
+			if(this->hasDelegator) delegator->addReservationExtensionPutToQueue(this->digit, 100.0*progress, elapsedTime);
 		}
 
 		bool resultsReady = true;
@@ -281,11 +284,11 @@ void progressData::progressCheck() {
 		if (resultsReady) {
 
 			uint64 contProcess = 0;
-			sJ currStatus = this->previousCache;
+			uint128 currStatus = this->previousCache;
 			bool compareCacheEnd = false;
 			bool cacheMisaligned = false;
 			for (bbpLauncher* launcher : launchersTracked) {
-				std::pair<sJ, uint64> launcherCache = launcher->getCacheFront();
+				std::pair<uint128, uint64> launcherCache = launcher->getCacheFront();
 				sJAdd(&currStatus, &launcherCache.first);
 				if (compareCacheEnd) {
 					if (contProcess != launcherCache.second) cacheMisaligned = true;
@@ -297,13 +300,13 @@ void progressData::progressCheck() {
 			}
 
 			if (!cacheMisaligned) {
-				delegator->addProgressUpdatePutToQueue(digit, currStatus, contProcess, elapsedTime);
+				if(this->hasDelegator) delegator->addProgressUpdatePutToQueue(digit, currStatus, contProcess, elapsedTime);
 				writeCache(contProcess, currStatus, elapsedTime);
 			}
 		}
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-		if (timeEst < 1.0 && !this->workRequested) {
+		if (timeEst < 1.0 && this->hasDelegator && !this->workRequested) {
 			requestWork();
 		}
 

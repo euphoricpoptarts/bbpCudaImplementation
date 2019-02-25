@@ -9,10 +9,10 @@
 #define fastModULTRAINSTINCT 0x7ffffffffff
 //#define QUINTILLION
 
-struct sJ {
-	uint64 s[2] = { 0, 0 };
+struct uint128 {
+	uint64 msw = 0, lsw = 0;
 };
 
-__device__ __host__ void sJAdd(sJ* addend, const sJ* augend);
-void bbpPassThrough(int threads, int blocks, sJ *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 strideMultiplier);
-void reduceSJPassThrough(int threads, int blocks, sJ *c, int offset, int stop);
+__device__ __host__ void sJAdd(uint128* addend, const uint128* augend);
+void bbpPassThrough(int threads, int blocks, uint128 *c, uint64 *progress, uint64 startingExponent, uint64 begin, uint64 end, uint64 strideMultiplier);
+void reduceUint128ArrayPassThrough(int threads, int blocks, uint128 *c, int offset, int stop);

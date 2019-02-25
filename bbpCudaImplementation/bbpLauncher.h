@@ -14,19 +14,19 @@ extern bool stop;
 
 class bbpLauncher {
 private:
-	sJ output;
+	uint128 output;
 	int size = 0;
 	cudaError_t error;
 	digitData * data;
-	std::deque<std::pair<sJ, uint64>> cacheQueue;
+	std::deque<std::pair<uint128, uint64>> cacheQueue;
 	std::mutex cacheMutex;
 	int gpu;
 	bool complete = false;
 	std::string uuid;
 
-	void cacheProgress(uint64 cacheEnd, sJ cacheData);
+	void cacheProgress(uint64 cacheEnd, uint128 cacheData);
 
-	static cudaError_t reduceSJ(sJ *c, unsigned int size);
+	static cudaError_t reduceSJ(uint128 *c, unsigned int size);
 
 	void queryUuid();
 
@@ -45,9 +45,9 @@ public:
 
 	cudaError_t getError();
 
-	sJ getResult();
+	uint128 getResult();
 
-	std::pair<sJ, uint64> getCacheFront();
+	std::pair<uint128, uint64> getCacheFront();
 
 	bool hasCache();
 

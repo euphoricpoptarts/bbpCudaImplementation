@@ -32,10 +32,11 @@ private:
 	digitData * nextWorkUnit;
 	bool workAssigned = false;
 	bool workRequested = false;
+	bool hasDelegator = false;
 	restClientDelegator * delegator;
 	std::condition_variable cv;
 
-	void writeCache(uint64 cacheEnd, sJ cacheData, double elapsedTime);
+	void writeCache(uint64 cacheEnd, uint128 cacheData, double elapsedTime);
 
 	int reloadFromCache(std::string pToFile);
 
@@ -43,10 +44,10 @@ private:
 
 	void blockForWork();
 
-	void sendResult(sJ result, double time);
+	void sendResult(uint128 result, double time);
 
 public:
-	sJ previousCache;
+	uint128 previousCache;
 	double previousTime;
 	volatile int quit = 0;
 	chr::high_resolution_clock::time_point begin;
