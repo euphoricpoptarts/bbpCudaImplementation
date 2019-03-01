@@ -69,10 +69,20 @@ int progressData::reloadFromCache(std::string pToFile) {
 	return 0;
 }
 
+
+std::string progressData::controlledUuids() {
+	std::string controlledUuids;
+	bool first = true;
+	for (bbpLauncher* launcher : launchersTracked) {
+		if (!first) controlledUuids.append("-");
+		controlledUuids.append(launcher->getUuid());
+		first = false;
+	}
+	return controlledUuids;
+}
+
 void progressData::requestWork() {
-	std::list<std::string> controlledUuids;
-	for (bbpLauncher* launcher : launchersTracked) controlledUuids.push_back(launcher->getUuid());
-	delegator->addWorkGetToQueue(this, controlledUuids);
+	delegator->addWorkGetToQueue(this);
 	workRequested = true;
 }
 

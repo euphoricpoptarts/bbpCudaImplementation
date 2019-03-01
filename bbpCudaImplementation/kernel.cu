@@ -12,6 +12,10 @@ __device__ __host__ void sJAdd(uint128* addend, const uint128* augend) {
 	if (addend->lsw < augend->lsw) addend->msw++;
 }
 
+struct uint64_s {
+	int hi = 0, lo = 0;
+};
+
 //uses 32 bit multiplications to compute the highest 64 and lowest 64 bits of squaring a 64 bit number
 //in assembly in order to access carry bit
 //saves work with realization that (hi + lo)^2 = hi^2 + 2*hi*lo + lo^2

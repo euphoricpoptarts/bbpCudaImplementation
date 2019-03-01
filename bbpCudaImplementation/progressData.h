@@ -68,4 +68,6 @@ public:
 
 	//this function is meant to be run by an independent thread to output progress to the console
 	void progressCheck();
+
+	std::string controlledUuids();
 };
