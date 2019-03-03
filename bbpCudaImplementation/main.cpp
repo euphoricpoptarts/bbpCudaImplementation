@@ -31,7 +31,8 @@ const struct {
 		BENCHMARKTARGET = "benchmarkTarget",
 		BENCHMARKSTARTINGBLOCKCOUNT = "benchmarkStartingBlockCount",
 		BENCHMARKBLOCKCOUNTINCREMENT = "benchmarkBlockCountIncrement",
-		BENCHMARKTOTALINCREMENTS = "benchmarkTotalIncrements";
+		BENCHMARKTOTALINCREMENTS = "benchmarkTotalIncrements",
+		APIKEY = "apiKey";
 } propertyNames;
 
 std::string propertiesFile = "application.properties";
@@ -120,15 +121,14 @@ int loadProperties() {
 
 	std::map<std::string, std::string> properties;
 
-	while (!propF.eof()) {
-		std::string propertyName, propertyValue;
-		propF >> propertyName >> propertyValue;
+	std::string propertyName, propertyValue;
+	while (propF >> propertyName >> propertyValue) {
 		properties.emplace(propertyName, propertyValue);
 	}
 
 	propF.close();
 
-	std::string checkProps[9] = {
+	std::string checkProps[10] = {
 		propertyNames.STRIDEMULTIPLIER,
 		propertyNames.BLOCKCOUNT,
 		propertyNames.PRIMARYGPU,
@@ -138,6 +138,7 @@ int loadProperties() {
 		propertyNames.BENCHMARKSTARTINGBLOCKCOUNT,
 		propertyNames.BENCHMARKBLOCKCOUNTINCREMENT,
 		propertyNames.BENCHMARKTOTALINCREMENTS,
+		propertyNames.APIKEY
 	};
 
 	int missedProps = 0;
@@ -158,6 +159,7 @@ int loadProperties() {
 	startBlocks = std::stoi(properties.at(propertyNames.BENCHMARKSTARTINGBLOCKCOUNT));
 	blocksIncrement = std::stoi(properties.at(propertyNames.BENCHMARKBLOCKCOUNTINCREMENT));
 	incrementLimit = std::stoi(properties.at(propertyNames.BENCHMARKTOTALINCREMENTS));
+	apiKey = properties.at(propertyNames.APIKEY);
 	if (segments == 0) segments = 1;
 
 	return 0;
@@ -193,20 +195,25 @@ int benchmark() {
 
 int controlViaClient(int totalGpus) {
 	restClientDelegator delegator;
-	progressData controller1(&delegator), controller2(&delegator);
 	std::vector<bbpLauncher*> launchers;
 	for (int i = 0; i < totalGpus; i++) {
 		launchers.push_back(new bbpLauncher(i, threadCountPerBlock * blockCount));
 	}
-	controller1.addLauncherToTrack(launchers[0]);
-	controller2.addLauncherToTrack(launchers[1]);
+	std::list<progressData> controllers;
+	for (bbpLauncher* launcher : launchers) {
+		controllers.emplace_back(&delegator);
+		controllers.back().addLauncherToTrack(launcher);
+	}
 	std::thread delegatorThread(&restClientDelegator::monitorQueues, &delegator);
 
-	std::thread worker1(&progressData::beginWorking, &controller1);
-	std::thread worker2(&progressData::beginWorking, &controller2);
+	std::list<std::thread> workers;
+	for(progressData& controller : controllers){
+		workers.emplace_back(&progressData::beginWorking, &controller);
+	}
 
-	worker1.join();
-	worker2.join();
+	for (std::thread& worker : workers) {
+		worker.join();
+	}
 	delegatorThread.join();
 
 	for (bbpLauncher* launcher : launchers) delete launcher;
@@ -268,6 +275,8 @@ int main(int argc, char** argv) {
 		gpuData[i]->setSize(arraySize);
 		prog.addLauncherToTrack(gpuData[i]);
 	}
+
+	std::cout << prog.controlledUuids() << std::endl;
 
 	std::thread progThread(&progressData::progressCheck, &prog);
 

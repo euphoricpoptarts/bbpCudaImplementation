@@ -19,6 +19,8 @@
 #include "kernel.cuh"
 #include "progressData.h"
 
+std::string apiKey = "";
+
 namespace ip = boost::asio::ip;
 namespace http = boost::beast::http;
 
@@ -38,6 +40,7 @@ class session : public std::enable_shared_from_this<session>
 	int version;
 	std::function<void(const boost::property_tree::ptree&)> processResponse;
 	std::function<void()> failHandler;
+	std::string apiKey;
 
 public:
 	// Resolver and socket require an io_context
@@ -45,6 +48,7 @@ public:
 		session(boost::asio::io_context& ioc, char const* host,
 			int port,
 			char const* target,
+			std::string apiKey,
 			int version)
 		: resolver_(ioc)
 		, socket_(ioc)
@@ -53,6 +57,7 @@ public:
 		, port(port)
 		, target(target)
 		, version(version)
+		, apiKey(apiKey)
 	{
 	}
 
@@ -68,6 +73,7 @@ public:
 		req_.target(target);
 		req_.set(http::field::host, host);
 		req_.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+		req_.set("apiKey", apiKey);
 		req_.body() = body;
 		req_.set(http::field::content_type, "application/json");
 		req_.set(http::field::content_length, body.size());
@@ -298,7 +304,7 @@ void restClientDelegator::processQueue(boost::asio::io_context& ioc, const std::
 	queueMtx.lock();
 	while (!apiCallQueue.empty() && apiCallQueue.top()->timeValid < validBefore) {
 		const apiCall * call = apiCallQueue.top();
-		std::make_shared<session>(ioc, "127.0.0.1", 5000, call->endpoint.c_str(), 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
+		std::make_shared<session>(ioc, "127.0.0.1", 5000, call->endpoint.c_str(), apiKey, 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
 		apiCallQueue.pop();
 	}
 	queueMtx.unlock();

@@ -21,7 +21,7 @@ struct uint64_s {
 //saves work with realization that (hi + lo)^2 = hi^2 + 2*hi*lo + lo^2
 //compare to non-squaring multiplication (hi1 + lo1)*(hi2 + lo2) = hi1*hi2 + hi1*lo2 + lo1*hi2 + lo1*lo2
 //one fewer multiplication is needed
-__device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
+__device__ void square64By64(uint64 multiplicand, uint64 & lo, uint64 & hi) {
 
 	asm("{\n\t"
 		".reg .u64          m0, m1, m2;\n\t"
@@ -41,7 +41,7 @@ __device__ void square64By64(uint64 multiplicand, uint64 * lo, uint64 * hi) {
 		"mov.b64            %0, {t0, t1};\n\t" //concatenates t0 and t1 into 1 64 bit word
 		"mov.b64            %1, {t2, t3};\n\t" //concatenates t2 and t3 into 1 64 bit word
 		"}"
-		: "=l"(*lo), "=l"(*hi)
+		: "=l"(lo), "=l"(hi)
 		: "l"(multiplicand));
 }
 
@@ -130,9 +130,9 @@ __device__ void modInverseNewtonsMethod(uint64 n, uint64 & output) {
 //uses a faster multiplication routine for squaring than is possible while not squaring
 __device__ void montgomerySquare(uint64 abar, uint64 mod, uint32 mprime, uint64 & output) {
 
-	uint64 tlo = 0;// , tm = 0;
+	uint64 tlo = 0;
 
-	square64By64(abar, &tlo, &output);
+	square64By64(abar, tlo, output);
 
 	montgomeryAddAndShift32Bit(output, tlo, mod, mprime);
 

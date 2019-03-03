@@ -8,6 +8,8 @@
 #include "kernel.cuh"
 #include <chrono>
 
+extern std::string apiKey;
+
 class digitData;
 class progressData;
 
