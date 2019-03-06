@@ -10,7 +10,7 @@ extern const int threadCountPerBlock;
 extern int blockCount;
 extern int primaryGpu;
 extern const uint64 cachePeriod;
-extern bool stop;
+extern volatile bool globalStopSignal;
 
 class bbpLauncher {
 private:
@@ -22,6 +22,7 @@ private:
 	std::mutex cacheMutex;
 	int gpu;
 	bool complete = false;
+	volatile bool quitSignal = false;
 	std::string uuid;
 
 	void cacheProgress(uint64 cacheEnd, uint128 cacheData);
@@ -54,4 +55,6 @@ public:
 	bool isComplete();
 
 	void launch();
+
+	void quit();
 };

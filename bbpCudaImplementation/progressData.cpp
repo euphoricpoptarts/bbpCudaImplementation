@@ -106,17 +106,23 @@ void progressData::blockForWork() {
 	workRequested = false;
 }
 
+void progressData::setStopCheck(uint64 remoteId) {
+	this->checkToStop = remoteId;
+}
+
 progressData::progressData(digitData * data)
 {
 	this->digit = data;
 	this->quit = 0;
 	this->reloadChoice = 0;
+	this->checkToStop = 0;
 }
 
 progressData::progressData(restClientDelegator * delegator)
 {
 	this->delegator = delegator;
 	this->hasDelegator = true;
+	this->checkToStop = 0;
 }
 
 void progressData::setReloadPolicy(int choice) {
@@ -188,7 +194,7 @@ int progressData::checkForProgressCache(uint64 totalSegments, uint64 segment) {
 
 void progressData::beginWorking() {
 	requestWork();
-	while (!stop) {
+	while (!globalStopSignal) {
 
 		blockForWork();
 
@@ -201,34 +207,43 @@ void progressData::beginWorking() {
 			threadLauncherPairs.emplace_back(std::thread(&bbpLauncher::launch, launcher), launcher);
 		}
 		progressCheck();
-		uint128 cudaResult;
-		cudaError_t cudaStatus;
+		if (areLaunchersComplete()) {
+			uint128 cudaResult;
+			cudaError_t cudaStatus;
 
-		for (std::pair<std::thread, bbpLauncher *>& pair : threadLauncherPairs) {
-			pair.first.join();
+			for (std::pair<std::thread, bbpLauncher *>& pair : threadLauncherPairs) {
+				pair.first.join();
 
-			cudaStatus = pair.second->getError();
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "cudaBbpLaunch failed on gpu %s!\n", pair.second->getUuid().c_str());
+				cudaStatus = pair.second->getError();
+				if (cudaStatus != cudaSuccess) {
+					fprintf(stderr, "cudaBbpLaunch failed on gpu %s!\n", pair.second->getUuid().c_str());
+				}
+
+				uint128 output = pair.second->getResult();
+
+				//sum results from gpus
+				sJAdd(&cudaResult, &output);
 			}
-
-			uint128 output = pair.second->getResult();
-
-			//sum results from gpus
-			sJAdd(&cudaResult, &output);
+			double time = (chr::duration_cast<chr::duration<double>>(chr::high_resolution_clock::now() - this->begin)).count();
+			printf("result of work-unit is %016llX %016llX\n",
+				cudaResult.msw, cudaResult.lsw);
+			printf("Computed in %.8f seconds\n", time);
+			sendResult(cudaResult, time);
 		}
-		double time = (chr::duration_cast<chr::duration<double>>(chr::high_resolution_clock::now() - this->begin)).count();
-		printf("result of work-unit is %016llX %016llX\n",
-			cudaResult.msw, cudaResult.lsw);
-		printf("Computed in %.8f seconds\n", time);
-		sendResult(cudaResult, time);
-		//cudaStatus = cudaDeviceReset();
-		/*if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaDeviceReset failed!\n");
-		}*/
+		else {
+			for (std::pair<std::thread, bbpLauncher *>& pair : threadLauncherPairs) {
+				pair.second->quit();
+				pair.first.join();
+			}
+		}
+		
 		if (!this->workRequested) {
 			requestWork();
 		}
+	}
+	cudaError_t cudaStatus = cudaDeviceReset();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceReset failed!\n");
 	}
 }
 
@@ -282,7 +297,7 @@ void progressData::progressCheck() {
 		//only update server every second
 		if (chr::duration_cast<chr::duration<double>>(now - lastServerProgUpdate).count() >= 1.0) {
 			lastServerProgUpdate += chr::seconds(1);
-			if(this->hasDelegator) delegator->addReservationExtensionPutToQueue(this->digit, 100.0*progress, elapsedTime);
+			if(this->hasDelegator) delegator->addReservationExtensionPutToQueue(this->digit, 100.0*progress, elapsedTime, this);
 		}
 
 		bool resultsReady = true;
@@ -321,11 +336,18 @@ void progressData::progressCheck() {
 		}
 
 		if (timeEst < 0.5) {
-			bool launchersDone = true;
-			for (bbpLauncher* launcher : launchersTracked) launchersDone = launchersDone && launcher->isComplete();
-			this->quit = launchersDone;
+			this->quit = areLaunchersComplete();
+		}
+		if (checkToStop.exchange(0) == this->digit->remoteId) {
+			this->quit = true;
 		}
 	}
+}
+
+bool progressData::areLaunchersComplete() {
+	bool launchersComplete = true;
+	for (bbpLauncher* launcher : launchersTracked) launchersComplete = launchersComplete && launcher->isComplete();
+	return launchersComplete;
 }
 
 const std::string progressData::progressFilenamePrefixTemplate = "exponent%lluTotalSegments%lluSegment%lluProgress";

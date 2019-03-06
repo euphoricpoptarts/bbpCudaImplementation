@@ -13,7 +13,7 @@ const int threadCountPerBlock = 128;
 int blockCount = 0;
 int primaryGpu = 0;
 const uint64 cachePeriod = 20000;
-bool stop = false;
+volatile bool globalStopSignal = false;
 
 void bbpLauncher::cacheProgress(uint64 cacheEnd, uint128 cacheData) {
 	cacheMutex.lock();
@@ -114,10 +114,15 @@ bool bbpLauncher::isComplete() {
 	return this->complete;
 }
 
+void bbpLauncher::quit() {
+	this->quitSignal = true;
+}
+
 // Helper function for using CUDA
 void bbpLauncher::launch()
 {
 	this->complete = false;
+	this->quitSignal = false;
 	uint128 *dev_c = 0;
 	uint128* c = new uint128[1];
 	uint128 *dev_ex = 0;
@@ -155,7 +160,7 @@ void bbpLauncher::launch()
 	//because bbp condition for stopping is <= digit, number of total elements in summation is 1 + digit
 	//even when digit/launchWidth is an integer, it is necessary to add 1
 	neededLaunches = ((this->data->sumEnd - this->data->sumBegin) / launchWidth) + 1LLU;
-	while (!stop && ((currentLaunch = this->data->launchCount++) < neededLaunches)) {
+	while (!globalStopSignal && !this->quitSignal && ((currentLaunch = this->data->launchCount++) < neededLaunches)) {
 
 		uint64 begin = this->data->sumBegin + (launchWidth * currentLaunch);
 		uint64 end = this->data->sumBegin + (launchWidth * (currentLaunch + 1)) - 1;

@@ -11,6 +11,7 @@
 #include <filesystem>
 #endif
 #include <algorithm>
+#include <atomic>
 #include "kernel.cuh"
 #include "bbpLauncher.h"
 #include "digitData.h"
@@ -35,6 +36,7 @@ private:
 	bool hasDelegator = false;
 	restClientDelegator * delegator;
 	std::condition_variable cv;
+	std::atomic<uint64> checkToStop;
 
 	void writeCache(uint64 cacheEnd, uint128 cacheData, double elapsedTime);
 
@@ -45,6 +47,8 @@ private:
 	void blockForWork();
 
 	void sendResult(uint128 result, double time);
+
+	bool areLaunchersComplete();
 
 public:
 	uint128 previousCache;
@@ -70,4 +74,6 @@ public:
 	void progressCheck();
 
 	std::string controlledUuids();
+
+	void setStopCheck(uint64 remoteId);
 };

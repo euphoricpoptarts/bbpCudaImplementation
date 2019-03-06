@@ -212,16 +212,26 @@ void restClientDelegator::noopFail(apiCall * failed) {
 	delete failed;
 }
 
+void restClientDelegator::quitUponSegmentExpirationSuccess(apiCall * succeeded, progressData * controller, uint64 remoteId, const boost::property_tree::ptree pt) {
+	if (!pt.empty()) {
+		bool reservationExtended = pt.get<bool>("success");
+		if (!reservationExtended) {
+			controller->setStopCheck(remoteId);
+		}
+	}
+	delete succeeded;
+}
+
 void restClientDelegator::noopSuccess(apiCall * succeeded, const boost::property_tree::ptree pt) {
 	delete succeeded;
 }
 
 void restClientDelegator::processWorkGetResponse(progressData * data, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt) {
 	if (!pt.empty()) {
-		uint64 sumEnd = std::stoull(pt.get<std::string>("segmentEnd"));
-		uint64 segmentBegin = std::stoull(pt.get<std::string>("segmentStart"));
-		uint64 exponent = std::stoull(pt.get<std::string>("exponent"));
-		uint64 remoteId = std::stoull(pt.get<std::string>("id"));
+		uint64 sumEnd = pt.get<uint64>("segmentEnd");
+		uint64 segmentBegin = pt.get<uint64>("segmentStart");
+		uint64 exponent = pt.get<uint64>("exponent");
+		uint64 remoteId = pt.get<uint64>("id");
 		digitData * workUnit = new digitData(sumEnd, exponent, segmentBegin, remoteId);
 		data->assignWork(workUnit);
 		delete call;
@@ -264,11 +274,11 @@ void restClientDelegator::addWorkGetToQueue(progressData * controller) {
 	queueMtx.unlock();
 }
 
-void restClientDelegator::addReservationExtensionPutToQueue(digitData * workSegment, double progress, double timeElapsed) {
+void restClientDelegator::addReservationExtensionPutToQueue(digitData * workSegment, double progress, double timeElapsed, progressData * controller) {
 	std::stringstream endpoint;
 	endpoint << "/extendSegmentReservation/" << workSegment->remoteId;
 	apiCall * call = new apiCall();
-	call->successHandle = std::bind(&restClientDelegator::noopSuccess, call, std::placeholders::_1);
+	call->successHandle = std::bind(&restClientDelegator::quitUponSegmentExpirationSuccess, call, controller, workSegment->remoteId, std::placeholders::_1);
 	call->body = "";
 	call->endpoint = endpoint.str();
 	call->verb = http::verb::put;
@@ -312,7 +322,7 @@ void restClientDelegator::processQueue(boost::asio::io_context& ioc, const std::
 
 void restClientDelegator::monitorQueues() {
 	boost::asio::io_context ioc;
-	while (!stop) {
+	while (!globalStopSignal) {
 		std::chrono::high_resolution_clock::time_point validBefore = std::chrono::high_resolution_clock::now();
 		processQueue(ioc, validBefore);
 		ioc.poll();//process any handlers currently ready on the context (using this instead of ::run avoids getting stuck waiting on a timeout to expire for a dead request)

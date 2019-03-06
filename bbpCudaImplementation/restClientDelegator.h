@@ -33,13 +33,14 @@ private:
 	void processQueue(boost::asio::io_context& ioc, const std::chrono::high_resolution_clock::time_point validBefore);
 	void retryOnFail(apiCall * toRetry);
 	static void noopFail(apiCall * failed);
+	static void quitUponSegmentExpirationSuccess(apiCall * succeeded, progressData * controller, uint64 remoteId, const boost::property_tree::ptree pt);
 	static void noopSuccess(apiCall * succeeded, const boost::property_tree::ptree pt);
 	static void processWorkGetResponse(progressData * data, restClientDelegator * returnToSender, apiCall * call, const boost::property_tree::ptree& pt);
 
 public:
 	void addResultPutToQueue(digitData * digit, uint128 result, double totalTime);
 	void addWorkGetToQueue(progressData * controller);
-	void addReservationExtensionPutToQueue(digitData * digit, double progress, double timeElapsed);
+	void addReservationExtensionPutToQueue(digitData * digit, double progress, double timeElapsed, progressData * controller);
 	void addProgressUpdatePutToQueue(digitData * digit, uint128 intermediateResult, uint64 computedUpTo, double timeElapsed);
 	void monitorQueues();
 };

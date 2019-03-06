@@ -293,7 +293,7 @@ int main(int argc, char** argv) {
 		cudaStatus = gpuData[i]->getError();
 		if (cudaStatus != cudaSuccess) {
 			fprintf(stderr, "cudaBbpLaunch failed on gpu%d!\n", i);
-			stop = true;
+			globalStopSignal = true;
 		}
 
 		uint128 output = gpuData[i]->getResult();
@@ -311,7 +311,7 @@ int main(int argc, char** argv) {
 	for (bbpLauncher* launcher : gpuData) delete launcher;
 	gpuData.clear();
 
-	if (!stop) {
+	if (!globalStopSignal) {
 
 		chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
 
@@ -353,6 +353,6 @@ int main(int argc, char** argv) {
 
 void sigint_handler(int sig) {
 	if (sig == SIGINT) {
-		stop = true;
+		globalStopSignal = true;
 	}
 }
