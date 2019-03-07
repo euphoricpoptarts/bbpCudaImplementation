@@ -310,7 +310,7 @@ void restClientDelegator::addProgressUpdatePutToQueue(digitData * workSegment, u
 	queueMtx.unlock();
 }
 
-void restClientDelegator::processQueue(boost::asio::io_context& ioc, const std::chrono::high_resolution_clock::time_point validBefore) {
+void restClientDelegator::processQueue(boost::asio::io_context& ioc, const std::chrono::steady_clock::time_point validBefore) {
 	queueMtx.lock();
 	while (!apiCallQueue.empty() && apiCallQueue.top()->timeValid < validBefore) {
 		const apiCall * call = apiCallQueue.top();
@@ -323,7 +323,7 @@ void restClientDelegator::processQueue(boost::asio::io_context& ioc, const std::
 void restClientDelegator::monitorQueues() {
 	boost::asio::io_context ioc;
 	while (!globalStopSignal) {
-		std::chrono::high_resolution_clock::time_point validBefore = std::chrono::high_resolution_clock::now();
+		std::chrono::steady_clock::time_point validBefore = std::chrono::steady_clock::now();
 		processQueue(ioc, validBefore);
 		ioc.poll();//process any handlers currently ready on the context (using this instead of ::run avoids getting stuck waiting on a timeout to expire for a dead request)
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));//rest between checking the queues for work

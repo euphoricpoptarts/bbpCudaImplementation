@@ -54,7 +54,7 @@ public:
 	uint128 previousCache;
 	double previousTime;
 	volatile int quit = 0;
-	chr::high_resolution_clock::time_point begin;
+	chr::steady_clock::time_point begin;
 
 	progressData(digitData * data);
 

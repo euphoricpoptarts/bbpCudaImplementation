@@ -201,7 +201,7 @@ void progressData::beginWorking() {
 		this->previousTime = 0.0;
 		this->quit = 0;
 		std::list<std::pair<std::thread, bbpLauncher *>> threadLauncherPairs;
-		this->begin = chr::high_resolution_clock::now();
+		this->begin = chr::steady_clock::now();
 		for (bbpLauncher* launcher : launchersTracked) {
 			launcher->setData(digit);
 			threadLauncherPairs.emplace_back(std::thread(&bbpLauncher::launch, launcher), launcher);
@@ -224,7 +224,7 @@ void progressData::beginWorking() {
 				//sum results from gpus
 				sJAdd(&cudaResult, &output);
 			}
-			double time = (chr::duration_cast<chr::duration<double>>(chr::high_resolution_clock::now() - this->begin)).count();
+			double time = (chr::duration_cast<chr::duration<double>>(chr::steady_clock::now() - this->begin)).count();
 			printf("result of work-unit is %016llX %016llX\n",
 				cudaResult.msw, cudaResult.lsw);
 			printf("Computed in %.8f seconds\n", time);
@@ -251,9 +251,9 @@ void progressData::beginWorking() {
 void progressData::progressCheck() {
 
 	std::deque<double> progressQ;
-	std::deque<chr::high_resolution_clock::time_point> timeQ;
-	chr::high_resolution_clock::time_point lastProgOutput, lastServerProgUpdate;
-	lastProgOutput = chr::high_resolution_clock::now();
+	std::deque<chr::steady_clock::time_point> timeQ;
+	chr::steady_clock::time_point lastProgOutput, lastServerProgUpdate;
+	lastProgOutput = chr::steady_clock::now();
 	lastServerProgUpdate = lastProgOutput;
 	inertialDouble progressPerSecond;
 	while (!this->quit) {
@@ -267,7 +267,7 @@ void progressData::progressCheck() {
 
 		double progress = (double)(readCurrent - this->digit->segmentBegin) / (double)(this->digit->sumEnd - this->digit->segmentBegin);
 
-		chr::high_resolution_clock::time_point now = chr::high_resolution_clock::now();
+		chr::steady_clock::time_point now = chr::steady_clock::now();
 		progressQ.push_front(progress);
 		timeQ.push_front(now);
 
