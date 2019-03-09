@@ -116,6 +116,9 @@
     <ClCompile Include="progressData.cpp" />
     <ClInclude Include="restClientDelegator.h" />
   </ItemGroup>
+  <ItemGroup>
+    <Text Include="rootcert.txt" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 10.0.targets" />

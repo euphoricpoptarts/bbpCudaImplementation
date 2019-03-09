@@ -32,7 +32,9 @@ const struct {
 		BENCHMARKSTARTINGBLOCKCOUNT = "benchmarkStartingBlockCount",
 		BENCHMARKBLOCKCOUNTINCREMENT = "benchmarkBlockCountIncrement",
 		BENCHMARKTOTALINCREMENTS = "benchmarkTotalIncrements",
-		APIKEY = "apiKey";
+		APIKEY = "apiKey",
+		DOMAINNAME = "domain",
+		PORT = "port";
 } propertyNames;
 
 std::string propertiesFile = "application.properties";
@@ -128,7 +130,7 @@ int loadProperties() {
 
 	propF.close();
 
-	std::string checkProps[10] = {
+	std::string checkProps[12] = {
 		propertyNames.STRIDEMULTIPLIER,
 		propertyNames.BLOCKCOUNT,
 		propertyNames.PRIMARYGPU,
@@ -138,7 +140,9 @@ int loadProperties() {
 		propertyNames.BENCHMARKSTARTINGBLOCKCOUNT,
 		propertyNames.BENCHMARKBLOCKCOUNTINCREMENT,
 		propertyNames.BENCHMARKTOTALINCREMENTS,
-		propertyNames.APIKEY
+		propertyNames.APIKEY,
+		propertyNames.DOMAINNAME,
+		propertyNames.PORT
 	};
 
 	int missedProps = 0;
@@ -160,6 +164,8 @@ int loadProperties() {
 	blocksIncrement = std::stoi(properties.at(propertyNames.BENCHMARKBLOCKCOUNTINCREMENT));
 	incrementLimit = std::stoi(properties.at(propertyNames.BENCHMARKTOTALINCREMENTS));
 	apiKey = properties.at(propertyNames.APIKEY);
+	domain = properties.at(propertyNames.DOMAINNAME);
+	targetPort = properties.at(propertyNames.PORT);
 	if (segments == 0) segments = 1;
 
 	return 0;

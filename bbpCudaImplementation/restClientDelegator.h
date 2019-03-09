@@ -3,12 +3,15 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/asio/ssl/stream.hpp>
 #include <mutex>
 #include <list>
 #include "kernel.cuh"
 #include <chrono>
 
 extern std::string apiKey;
+extern std::string domain;
+extern std::string targetPort;
 
 class digitData;
 class progressData;
@@ -30,7 +33,7 @@ class restClientDelegator
 private:
 	boost::heap::priority_queue<apiCall*, boost::heap::compare<apiCall>> apiCallQueue;
 	std::mutex queueMtx;
-	void processQueue(boost::asio::io_context& ioc, const std::chrono::steady_clock::time_point validBefore);
+	void processQueue(boost::asio::io_context& ioc, boost::asio::ssl::context& sslCtx, const std::chrono::steady_clock::time_point validBefore);
 	void retryOnFail(apiCall * toRetry);
 	static void noopFail(apiCall * failed);
 	static void quitUponSegmentExpirationSuccess(apiCall * succeeded, progressData * controller, uint64 remoteId, const boost::property_tree::ptree pt);
