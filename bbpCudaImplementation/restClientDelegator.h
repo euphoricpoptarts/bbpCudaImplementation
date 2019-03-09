@@ -4,6 +4,7 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/asio/ssl/stream.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <mutex>
 #include <list>
 #include "kernel.cuh"
@@ -33,6 +34,10 @@ class restClientDelegator
 private:
 	boost::heap::priority_queue<apiCall*, boost::heap::compare<apiCall>> apiCallQueue;
 	std::mutex queueMtx;
+	boost::asio::ip::tcp::resolver::results_type resolvedResults;
+	std::chrono::steady_clock::time_point nextResolve;
+	bool lastResolveSuccessful;
+	bool resolve(boost::asio::io_context& ioc, std::string host, std::string port);
 	void processQueue(boost::asio::io_context& ioc, boost::asio::ssl::context& sslCtx, const std::chrono::steady_clock::time_point validBefore);
 	void retryOnFail(apiCall * toRetry);
 	static void noopFail(apiCall * failed);

@@ -4,7 +4,6 @@
 #include <boost/beast/version.hpp>
 #include <boost/asio/ssl/error.hpp>
 #include <boost/asio/connect.hpp>
-#include <boost/asio/ip/tcp.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/asio/deadline_timer.hpp>
 #include <functional>
@@ -32,7 +31,7 @@ namespace ssl = boost::asio::ssl;
 // Performs an HTTP GET and prints the response
 class session : public std::enable_shared_from_this<session>
 {
-	ip::tcp::resolver resolver_;
+	ip::tcp::resolver::results_type resolved;
 	ssl::stream<ip::tcp::socket> stream_;
 	boost::asio::deadline_timer timeout;
 	boost::beast::flat_buffer buffer_; // (Must persist between reads)
@@ -49,12 +48,12 @@ class session : public std::enable_shared_from_this<session>
 public:
 	// Resolver and socket require an io_context
 	explicit
-		session(boost::asio::io_context& ioc, ssl::context& sslCtx, char const* host,
-			char const* port,
+		session(boost::asio::io_context& ioc, ssl::context& sslCtx, ip::tcp::resolver::results_type resolved,
+			char const* host,
 			char const* target,
 			std::string apiKey,
 			int version)
-		: resolver_(ioc)
+		: resolved(resolved)
 		, stream_(ioc, sslCtx)
 		, timeout(ioc)
 		, host(host)
@@ -72,7 +71,7 @@ public:
 		if (!SSL_set_tlsext_host_name(stream_.native_handle(), host))
 		{
 			boost::system::error_code ec{ static_cast<int>(::ERR_get_error()), boost::asio::error::get_ssl_category() };
-			std::cerr << ec.message() << "\n";
+			std::cerr << ec.message() << std::endl;
 			return;
 		}
 
@@ -100,30 +99,11 @@ public:
 					std::placeholders::_1));
 		});
 
-		// Look up the domain name
-		resolver_.async_resolve(
-			host,
-			port,
-			std::bind(
-				&session::on_resolve,
-				shared_from_this(),
-				std::placeholders::_1,
-				std::placeholders::_2));
-	}
-
-	void
-		on_resolve(
-			boost::system::error_code ec,
-			ip::tcp::resolver::results_type results)
-	{
-		if (ec)
-			return;
-
 		// Make the connection on the IP address we get from a lookup
 		boost::asio::async_connect(
 			stream_.next_layer(),
-			results.begin(),
-			results.end(),
+			resolved.begin(),
+			resolved.end(),
 			std::bind(
 				&session::on_connect,
 				shared_from_this(),
@@ -134,6 +114,7 @@ public:
 		on_connect(boost::system::error_code ec)
 	{
 		if (ec) {
+			std::cerr << "Connection error: " << ec.message() << std::endl;
 			return failHandler();
 		}
 
@@ -150,7 +131,7 @@ public:
 		on_handshake(boost::system::error_code ec)
 	{
 		if (ec) {
-			std::cerr << "Handshake had an oopsie: " << ec.message() << std::endl;
+			std::cerr << "Handshake error: " << ec.message() << std::endl;
 			return failHandler();
 		}
 
@@ -170,8 +151,10 @@ public:
 	{
 		boost::ignore_unused(bytes_transferred);
 
-		if (ec)
+		if (ec) {
+			std::cerr << ec.message() << std::endl;
 			return;
+		}
 
 		// Receive the HTTP response
 		http::async_read(stream_, buffer_, res_,
@@ -190,14 +173,15 @@ public:
 		timeout.cancel();
 		boost::ignore_unused(bytes_transferred);
 
-
-		// not_connected happens sometimes so don't bother reporting it.
-		if (ec && ec != boost::system::errc::not_connected) {
-			std::cout << ec.message() << std::endl;
+		if (ec) {
+			std::cerr << ec.message() << std::endl;
 			return failHandler();
 		}
 
-		if (res_.result_int() != 200) return failHandler();
+		if (res_.result_int() != 200) {
+			std::cerr << "Error response code: " << res_.result_int() << std::endl;
+			return failHandler();
+		}
 
 		boost::property_tree::ptree pt;
 
@@ -358,24 +342,45 @@ void restClientDelegator::processQueue(boost::asio::io_context& ioc, ssl::contex
 	queueMtx.lock();
 	while (!apiCallQueue.empty() && apiCallQueue.top()->timeValid < validBefore) {
 		const apiCall * call = apiCallQueue.top();
-		std::make_shared<session>(ioc, sslCtx, domain.c_str(), targetPort.c_str(), call->endpoint.c_str(), apiKey, 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
+		std::make_shared<session>(ioc, sslCtx, resolvedResults, domain.c_str(), call->endpoint.c_str(), apiKey, 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
 		apiCallQueue.pop();
 	}
 	queueMtx.unlock();
+}
+
+bool restClientDelegator::resolve(boost::asio::io_context& ioc, std::string host, std::string port) {
+	if (nextResolve < std::chrono::steady_clock::now()) {
+		ip::tcp::resolver resolver(ioc);
+		boost::system::error_code ec;
+		resolvedResults = resolver.resolve(host.c_str(), port.c_str(), ec);
+		if (!ec) {
+			nextResolve = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+			lastResolveSuccessful = true;
+		}
+		else {
+			std::cerr << ec.message() << std::endl;
+			nextResolve = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+			lastResolveSuccessful = false;
+		}
+	}
+	return lastResolveSuccessful;
 }
 
 void restClientDelegator::monitorQueues() {
 	boost::asio::io_context ioc;
 	// The SSL context is required, and holds certificates
 	ssl::context ctx{ ssl::context::sslv23_client };
-
 	ctx.load_verify_file("rootcert.txt");
-
 	// Verify the remote server's certificate
 	ctx.set_verify_mode(ssl::verify_peer);
+
+	nextResolve = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+	lastResolveSuccessful = false;
 	while (!globalStopSignal) {
-		std::chrono::steady_clock::time_point validBefore = std::chrono::steady_clock::now();
-		processQueue(ioc, ctx, validBefore);
+		if (resolve(ioc, domain, targetPort)) {
+			std::chrono::steady_clock::time_point validBefore = std::chrono::steady_clock::now();
+			processQueue(ioc, ctx, validBefore);
+		}
 		ioc.poll();//process any handlers currently ready on the context (using this instead of ::run avoids getting stuck waiting on a timeout to expire for a dead request)
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));//rest between checking the queues for work
 	}
