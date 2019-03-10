@@ -10,7 +10,6 @@
 #include <iostream>
 #include <memory>
 #include <string>
-#include <thread>
 #include <chrono>
 #include <sstream>
 #include <queue>
@@ -38,7 +37,6 @@ class session : public std::enable_shared_from_this<session>
 	http::request<http::string_body> req_;
 	http::response<http::string_body> res_;
 	char const* host;
-	char const* port;
 	char const* target;
 	int version;
 	std::function<void(const boost::property_tree::ptree&)> processResponse;
@@ -57,7 +55,6 @@ public:
 		, stream_(ioc, sslCtx)
 		, timeout(ioc)
 		, host(host)
-		, port(port)
 		, target(target)
 		, version(version)
 		, apiKey(apiKey)
@@ -349,17 +346,18 @@ void restClientDelegator::processQueue(boost::asio::io_context& ioc, ssl::contex
 }
 
 bool restClientDelegator::resolve(boost::asio::io_context& ioc, std::string host, std::string port) {
-	if (nextResolve < std::chrono::steady_clock::now()) {
+	std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+	if (nextResolve < now) {
 		ip::tcp::resolver resolver(ioc);
 		boost::system::error_code ec;
 		resolvedResults = resolver.resolve(host.c_str(), port.c_str(), ec);
 		if (!ec) {
-			nextResolve = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+			nextResolve = now + std::chrono::minutes(5);
 			lastResolveSuccessful = true;
 		}
 		else {
 			std::cerr << ec.message() << std::endl;
-			nextResolve = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+			nextResolve = now + std::chrono::seconds(1);
 			lastResolveSuccessful = false;
 		}
 	}

@@ -1,4 +1,5 @@
 #pragma once
+#define _WIN32_WINNT 0x0A00//defines as windows 10, must be defined even for 64-bit builds
 #include <boost/heap/priority_queue.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/property_tree/ptree.hpp>
