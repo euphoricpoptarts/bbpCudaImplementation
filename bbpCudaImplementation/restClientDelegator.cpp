@@ -319,7 +319,7 @@ void restClientDelegator::addProgressUpdatePutToQueue(digitData * workSegment, u
 	boost::property_tree::ptree pt;
 	pt.put("most-significant-word", hexConvert(intermediateResult.msw));
 	pt.put("least-significant-word", hexConvert(intermediateResult.lsw));
-	pt.put("continue-from", hexConvert(computedUpTo));
+	pt.put("continue-from", computedUpTo);
 	pt.put("time", hexConvert(timeElapsed));
 	boost::property_tree::json_parser::write_json(body, pt);
 	endpoint << "/progressUpdate/" << workSegment->remoteId;
