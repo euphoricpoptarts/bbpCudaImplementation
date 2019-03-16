@@ -28,6 +28,7 @@ private:
 	static const std::string progressFilenamePrefixTemplate;
 	std::string progressFilenamePrefix;
 	std::vector<bbpLauncher*> launchersTracked;
+	std::list<std::pair<std::thread, bbpLauncher *>> threadLauncherPairs;
 	int reloadChoice;
 	digitData * digit = nullptr;
 	digitData * nextWorkUnit;
@@ -39,16 +40,13 @@ private:
 	std::atomic<uint64> checkToStop;
 
 	void writeCache(uint64 cacheEnd, uint128 cacheData, double elapsedTime);
-
+	bool fetchResultFromLaunchers(uint128& result, double& time);
 	int reloadFromCache(std::string pToFile);
-
 	void requestWork();
-
 	void blockForWork();
-
 	void sendResult(uint128 result, double time);
-
 	bool areLaunchersComplete();
+	bool checkForProgressCache();
 
 public:
 	uint128 previousCache;
@@ -66,9 +64,11 @@ public:
 
 	void addLauncherToTrack(bbpLauncher * launcher);
 
-	int checkForProgressCache(uint64 totalSegments, uint64 segment);
+	void runSingleWorkUnit();
 
 	void beginWorking();
+
+	void beginWorkUnit();
 
 	//this function is meant to be run by an independent thread to output progress to the console
 	void progressCheck();

@@ -271,11 +271,6 @@ int main(int argc, char** argv) {
 	progressData prog(&data);
 	prog.setReloadPolicy(args.getReloadChoice());
 
-	if (prog.checkForProgressCache(segments, segmentNumber + 1LLU)) return 1;
-
-	chr::high_resolution_clock::time_point start = chr::high_resolution_clock::now();
-	prog.begin = start;
-
 	for (int i = 0; i < totalGpus; i++) {
 		gpuData.push_back(new bbpLauncher(&data, i));
 		gpuData[i]->setSize(arraySize);
@@ -283,75 +278,13 @@ int main(int argc, char** argv) {
 	}
 
 	std::cout << prog.controlledUuids() << std::endl;
+	prog.runSingleWorkUnit();
 
-	std::thread progThread(&progressData::progressCheck, &prog);
-
-	for (int i = 0; i < totalGpus; i++) {
-		handles[i] = std::thread(&bbpLauncher::launch, gpuData[i]);
-	}
-
-	uint128 cudaResult = prog.previousCache;
-
-	for (int i = 0; i < totalGpus; i++) {
-
-		handles[i].join();
-
-		cudaStatus = gpuData[i]->getError();
-		if (cudaStatus != cudaSuccess) {
-			fprintf(stderr, "cudaBbpLaunch failed on gpu%d!\n", i);
-			globalStopSignal = true;
-		}
-
-		uint128 output = gpuData[i]->getResult();
-
-		//sum results from gpus
-		sJAdd(&cudaResult, &output);
-	}
-
-	//tell the progress thread to quit
-	//prog.quit = 1;
-
-	progThread.join();
-
-	delete[] handles;
 	for (bbpLauncher* launcher : gpuData) delete launcher;
 	gpuData.clear();
 
-	if (!globalStopSignal) {
-
-		chr::high_resolution_clock::time_point end = chr::high_resolution_clock::now();
-
-		printf("pi at hexadecimal digit %llu is %016llX %016llX\n",
-			hexDigitPosition, cudaResult.msw, cudaResult.lsw);
-
-		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
-		double totalTime = prog.previousTime + (chr::duration_cast<chr::duration<double>>(end - start)).count();
-		printf("Computed in %.8f seconds\n", totalTime);
-
-		const char * completionPathFormat = "completed/segmented%dExponent%lluSegment%dBase2Complete.dat";
-		char buffer[256];
-		snprintf(buffer, sizeof(buffer), completionPathFormat, segments, data.startingExponent, segmentNumber + 1);
-		std::ofstream completedF(buffer, std::ios::out);
-		if (completedF.is_open()) {
-			completedF << std::hex << std::setfill('0');
-			completedF << std::setw(16) << cudaResult.lsw << std::endl;
-			completedF << std::setw(16) << cudaResult.msw << std::endl;
-			completedF << std::hexfloat << std::setprecision(13) << totalTime << std::endl;
-			completedF.close();
-		}
-		else {
-			fprintf(stderr, "Error opening file %s\n", buffer);
-		}
-	}
-	else {
+	if (globalStopSignal) {
 		std::cout << "Quitting upon user exit command!" << std::endl;
-	}
-
-	// cudaDeviceReset must be called before exiting in order for profiling and
-	// tracing tools such as Nsight and Visual Profiler to show complete traces.
-	cudaStatus = cudaDeviceReset();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaDeviceReset failed!");
 	}
 
 	return 0;

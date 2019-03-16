@@ -18,7 +18,9 @@ digitData::digitData(uint64 sumEnd, uint64 startingExponent, uint64 segmentBegin
 	setupProgress();
 }
 
-digitData::digitData(uint64 digitInput, uint64 segments, uint64 segmentNumber) {
+digitData::digitData(uint64 digitInput, uint64 segments, uint64 segmentNumber)
+	: digitPos(digitInput), segments(segments), segmentNumber(segmentNumber)
+{
 
 	//this currently assumes that all launches will be of the same width (which is currently the case)
 	//if in the future I want to change that, this will instead track the next sum term to process and will be initiated to sumBegin

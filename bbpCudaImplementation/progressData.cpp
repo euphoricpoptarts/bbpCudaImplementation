@@ -139,9 +139,9 @@ void progressData::addLauncherToTrack(bbpLauncher * launcher) {
 	launchersTracked.push_back(launcher);
 }
 
-int progressData::checkForProgressCache(uint64 totalSegments, uint64 segment) {
+bool progressData::checkForProgressCache() {
 	char buffer[256];
-	snprintf(buffer, sizeof(buffer), progressFilenamePrefixTemplate.c_str(), this->digit->startingExponent, totalSegments, segment);
+	snprintf(buffer, sizeof(buffer), progressFilenamePrefixTemplate.c_str(), digit->startingExponent, digit->segments, digit->segmentNumber + 1);
 	this->progressFilenamePrefix = buffer;
 	std::string pToFile;
 	std::vector<std::string> matching;
@@ -170,7 +170,7 @@ int progressData::checkForProgressCache(uint64 totalSegments, uint64 segment) {
 				if (choice == 'y') {}
 				else if (choice == 'n') {
 					std::cout << "Beginning computation without reloading." << std::endl;
-					return 0;
+					return true;
 				}
 				else {
 					std::cout << "Invalid input" << std::endl;
@@ -182,14 +182,54 @@ int progressData::checkForProgressCache(uint64 totalSegments, uint64 segment) {
 			}
 		}
 		else if (this->reloadChoice == 2) {
-			return 0;
+			return true;
 		}
 		reloadFromCache(pToFile);
 	}
 	else {
 		std::cout << "No progress cache file found. Beginning computation without reloading." << std::endl;
 	}
-	return 0;
+	return true;
+}
+
+void progressData::beginWorkUnit() {
+	threadLauncherPairs.clear();
+	this->begin = chr::steady_clock::now();
+	for (bbpLauncher* launcher : launchersTracked) {
+		launcher->setData(digit);
+		threadLauncherPairs.emplace_back(std::thread(&bbpLauncher::launch, launcher), launcher);
+	}
+}
+
+bool progressData::fetchResultFromLaunchers(uint128& result, double& time) {
+	if (areLaunchersComplete()) {
+		uint128 cudaResult;
+		cudaError_t cudaStatus;
+
+		for (std::pair<std::thread, bbpLauncher *>& pair : threadLauncherPairs) {
+			pair.first.join();
+
+			cudaStatus = pair.second->getError();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaBbpLaunch failed on gpu %s!\n", pair.second->getUuid().c_str());
+			}
+
+			uint128 output = pair.second->getResult();
+
+			//sum results from gpus
+			sJAdd(&cudaResult, &output);
+		}
+		result = cudaResult;
+		time = (chr::duration_cast<chr::duration<double>>(chr::steady_clock::now() - this->begin)).count();
+		return true;
+	}
+	else {
+		for (std::pair<std::thread, bbpLauncher *>& pair : threadLauncherPairs) {
+			pair.second->quit();
+			pair.first.join();
+		}
+		return false;
+	}
 }
 
 void progressData::beginWorking() {
@@ -200,45 +240,57 @@ void progressData::beginWorking() {
 
 		this->previousTime = 0.0;
 		this->quit = 0;
-		std::list<std::pair<std::thread, bbpLauncher *>> threadLauncherPairs;
-		this->begin = chr::steady_clock::now();
-		for (bbpLauncher* launcher : launchersTracked) {
-			launcher->setData(digit);
-			threadLauncherPairs.emplace_back(std::thread(&bbpLauncher::launch, launcher), launcher);
-		}
+		beginWorkUnit();
 		progressCheck();
-		if (areLaunchersComplete()) {
-			uint128 cudaResult;
-			cudaError_t cudaStatus;
-
-			for (std::pair<std::thread, bbpLauncher *>& pair : threadLauncherPairs) {
-				pair.first.join();
-
-				cudaStatus = pair.second->getError();
-				if (cudaStatus != cudaSuccess) {
-					fprintf(stderr, "cudaBbpLaunch failed on gpu %s!\n", pair.second->getUuid().c_str());
-				}
-
-				uint128 output = pair.second->getResult();
-
-				//sum results from gpus
-				sJAdd(&cudaResult, &output);
-			}
-			double time = (chr::duration_cast<chr::duration<double>>(chr::steady_clock::now() - this->begin)).count();
+		uint128 result;
+		double time;
+		if (fetchResultFromLaunchers(result, time)) {
 			printf("result of work-unit is %016llX %016llX\n",
-				cudaResult.msw, cudaResult.lsw);
+				result.msw, result.lsw);
 			printf("Computed in %.8f seconds\n", time);
-			sendResult(cudaResult, time);
-		}
-		else {
-			for (std::pair<std::thread, bbpLauncher *>& pair : threadLauncherPairs) {
-				pair.second->quit();
-				pair.first.join();
-			}
+			sendResult(result, time);
 		}
 		
 		if (!this->workRequested) {
 			requestWork();
+		}
+	}
+	cudaError_t cudaStatus = cudaDeviceReset();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceReset failed!\n");
+	}
+}
+
+void progressData::runSingleWorkUnit() {
+	this->quit = 0;
+	if (!checkForProgressCache()) return;
+	beginWorkUnit();
+	progressCheck();
+	uint128 result;
+	double time;
+	if (fetchResultFromLaunchers(result, time)) {
+		sJAdd(&result, &previousCache);
+
+		printf("pi at hexadecimal digit %llu is %016llX %016llX\n",
+			digit->digitPos, result.msw, result.lsw);
+
+		//find time elapsed during runtime of program, and add it to recorded runtime of previous unfinished run
+		double totalTime = previousTime + time;
+		printf("Computed in %.8f seconds\n", totalTime);
+
+		const char * completionPathFormat = "completed/segmented%dExponent%lluSegment%dBase2Complete.dat";
+		char fileNameBuffer[256];
+		snprintf(fileNameBuffer, sizeof(fileNameBuffer), completionPathFormat, digit->segments, digit->startingExponent, digit->segmentNumber + 1);
+		std::ofstream completedF(fileNameBuffer, std::ios::out);
+		if (completedF.is_open()) {
+			completedF << std::hex << std::setfill('0');
+			completedF << std::setw(16) << result.lsw << std::endl;
+			completedF << std::setw(16) << result.msw << std::endl;
+			completedF << std::hexfloat << std::setprecision(13) << totalTime << std::endl;
+			completedF.close();
+		}
+		else {
+			fprintf(stderr, "Error opening file %s\n", fileNameBuffer);
 		}
 	}
 	cudaError_t cudaStatus = cudaDeviceReset();
@@ -338,7 +390,7 @@ void progressData::progressCheck() {
 		if (timeEst < 0.5) {
 			this->quit = areLaunchersComplete();
 		}
-		if (checkToStop.exchange(0) == this->digit->remoteId) {
+		if (this->digit->remoteId > 0 && checkToStop.exchange(0) == this->digit->remoteId) {
 			this->quit = true;
 		}
 	}

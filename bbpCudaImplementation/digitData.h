@@ -15,6 +15,7 @@ public:
 	uint64 sumBegin = 0;
 	uint64 segmentBegin = 0;
 	uint64 remoteId = 0;
+	uint64 digitPos = 0, segments = 0, segmentNumber = 0;
 	std::atomic<uint64> launchCount;
 	cudaError_t error;
 	volatile uint64 * currentProgress = nullptr;
