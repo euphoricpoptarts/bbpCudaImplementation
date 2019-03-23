@@ -339,7 +339,8 @@ void restClientDelegator::processQueue(boost::asio::io_context& ioc, ssl::contex
 	queueMtx.lock();
 	while (!apiCallQueue.empty() && apiCallQueue.top()->timeValid < validBefore) {
 		const apiCall * call = apiCallQueue.top();
-		std::make_shared<session>(ioc, sslCtx, resolvedResults, domain.c_str(), call->endpoint.c_str(), apiKey, 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
+		std::string endpoint = "/api" + call->endpoint;
+		std::make_shared<session>(ioc, sslCtx, resolvedResults, domain.c_str(), endpoint.c_str(), apiKey, 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
 		apiCallQueue.pop();
 	}
 	queueMtx.unlock();
