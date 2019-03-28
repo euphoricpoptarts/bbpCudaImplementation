@@ -170,11 +170,19 @@ __device__ void fixedPointDivisionExactWithShift(const uint64 & mod, const uint6
 	else sub128Bit(result->msw, result->lsw, q1, q0);
 }
 
-//using left-to-right binary exponentiation
-//the position of the highest bit in exponent is passed into the function as a parameter (it is more efficient to find it outside)
-//uses montgomery multiplication to reduce difficulty of modular multiplication (runs in 55% of runtime of non-montgomery modular multiplication)
-//montgomery multiplication suggested by njuffa
-//adds the 128 bit number representing ((2^exp)%mod)/mod to result
+/*
+  calculates left-to-right binary exponentiation with respect to a modulus
+  adds the 128 bit number representing ((2^exp)%mod)/mod to result
+  exponentation may be partially precomputed
+  @param exp: the exponent (shocking)
+  @param mod: modulus under which the exponentation should occur
+  @param result: pointer to the structure containing the sum of previous modular exponentations to add this result to
+  @param negative: 1 if this is a negative term in the summation, 0 if it is positive
+  @param montgomeryStart: 2^(64 + precomputed bits of exponent) % mod
+	This is 2 in montgomery space with no precomputation, or the precomputed part of the exponent in montgomery space with precomputation.
+  @param shiftToLittleBit: 63 if no precomputation has occurred (and 1 less than 63 for every precomputed bit of the exponent)
+  uses montgomery multiplication to avoid modulus operations
+*/
 __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, uint128 * result, const int & negative, uint64 montgomeryStart, int shiftToLittleBit) {
 	uint64 output = 1;
 	uint64 mPrime;
@@ -269,7 +277,8 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 st
 	
 	//go backwards so we can add div instead of subtracting it
 	//subtracting produces a likelihood of underflow (whereas addition will not cause overflow for any mod where 2^8 < mod < (2^64 - 2^8) )
-	for (uint64 k = end; k >= start && k <= end; k--) {
+	//also condition is (k + 1) > start as opposed to k >= start because if start is 0 then k >= start has no end condition
+	for (uint64 k = end; (k + 1) > start; k--) {
 		uint64 exp = startingExponent - (k*10LLU);
 		uint64 mod = modCoefficient * k + startingMod;
 		if(!fastModViable) {
