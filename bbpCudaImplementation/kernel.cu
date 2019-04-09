@@ -255,7 +255,7 @@ __device__ __noinline__ void fastModApproximator(uint64 endMod, uint64 startExp,
 }
 
 //computes strideMultiplier # of summation terms
-__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 startingMod, uint64 modCoefficient, int negative, uint128* output, uint64* progress) {
+__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 & startingMod, uint64 modCoefficient, int negative, uint128* output, uint64* progress) {
 
 	//depending on the size of the smallest mod a thread will operate on
 	//these variables determine which optimizations are viable
@@ -347,7 +347,9 @@ __global__ void bbpKernel(uint128 *c, uint64 *progress, uint64 startingExponent,
 		modCoefficient = 10;
 		startingExponent -= 8;
 	}
-	bbp(startingExponent, start, end, mod, modCoefficient, negative, c + gridId, progress);
+	__shared__ uint64 modArr[128];
+	modArr[threadIdx.x] = mod;
+	bbp(startingExponent, start, end, modArr[threadIdx.x], modCoefficient, negative, c + gridId, progress);
 }
 
 //stride over current leaves of reduce tree
