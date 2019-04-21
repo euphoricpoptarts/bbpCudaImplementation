@@ -335,15 +335,26 @@ void restClientDelegator::addProgressUpdatePutToQueue(digitData * workSegment, u
 	queueMtx.unlock();
 }
 
-void restClientDelegator::processQueue(boost::asio::io_context& ioc, ssl::context& sslCtx, const std::chrono::steady_clock::time_point validBefore) {
+void restClientDelegator::processQueue(boost::asio::io_context& ioc, ssl::context& sslCtx, const std::chrono::steady_clock::time_point validBefore, bool resolveStatus) {
+	std::queue<apiCall*> resolveFailures;
 	queueMtx.lock();
 	while (!apiCallQueue.empty() && apiCallQueue.top()->timeValid < validBefore) {
-		const apiCall * call = apiCallQueue.top();
+		apiCall * call = apiCallQueue.top();
 		std::string endpoint = "/api" + call->endpoint;
-		std::make_shared<session>(ioc, sslCtx, resolvedResults, domain.c_str(), endpoint.c_str(), apiKey, 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
+		if (resolveStatus) {
+			std::make_shared<session>(ioc, sslCtx, resolvedResults, domain.c_str(), endpoint.c_str(), apiKey, 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
+		}
+		else {
+			resolveFailures.push(call);
+		}
 		apiCallQueue.pop();
 	}
 	queueMtx.unlock();
+	while(!resolveFailures.empty()) {
+		apiCall* resolveFailure = resolveFailures.front();
+		resolveFailures.pop();
+		resolveFailure->failHandle();
+	}
 }
 
 bool restClientDelegator::resolve(boost::asio::io_context& ioc, std::string host, std::string port) {
@@ -376,10 +387,8 @@ void restClientDelegator::monitorQueues() {
 	nextResolve = std::chrono::steady_clock::now() - std::chrono::seconds(1);
 	lastResolveSuccessful = false;
 	while (!globalStopSignal) {
-		if (resolve(ioc, domain, targetPort)) {
-			std::chrono::steady_clock::time_point validBefore = std::chrono::steady_clock::now();
-			processQueue(ioc, ctx, validBefore);
-		}
+		std::chrono::steady_clock::time_point validBefore = std::chrono::steady_clock::now();
+		processQueue(ioc, ctx, validBefore, resolve(ioc, domain, targetPort));
 		ioc.poll();//process any handlers currently ready on the context (using this instead of ::run avoids getting stuck waiting on a timeout to expire for a dead request)
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));//rest between checking the queues for work
 	}

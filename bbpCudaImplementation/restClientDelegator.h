@@ -39,7 +39,7 @@ private:
 	std::chrono::steady_clock::time_point nextResolve;
 	bool lastResolveSuccessful;
 	bool resolve(boost::asio::io_context& ioc, std::string host, std::string port);
-	void processQueue(boost::asio::io_context& ioc, boost::asio::ssl::context& sslCtx, const std::chrono::steady_clock::time_point validBefore);
+	void processQueue(boost::asio::io_context& ioc, boost::asio::ssl::context& sslCtx, const std::chrono::steady_clock::time_point validBefore, bool resolveStatus);
 	void retryOnFail(apiCall * toRetry);
 	static void noopFail(apiCall * failed);
 	static void quitUponSegmentExpirationSuccess(apiCall * succeeded, progressData * controller, uint64 remoteId, const boost::property_tree::ptree pt);
