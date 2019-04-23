@@ -1,11 +1,11 @@
 #include "restClientDelegator.h"
 
 #include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
-#include <boost/asio/ssl/error.hpp>
-#include <boost/asio/connect.hpp>
+#include <boost/beast/ssl.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/property_tree/json_parser.hpp>
-#include <boost/asio/deadline_timer.hpp>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -22,18 +22,19 @@ std::string apiKey = "";
 std::string domain = "";
 std::string targetPort = "";
 
-namespace ip = boost::asio::ip;
+namespace beast = boost::beast;
+namespace net = boost::asio;
+namespace ip = net::ip;
 namespace http = boost::beast::http;
-namespace ssl = boost::asio::ssl;
+namespace ssl = net::ssl;
 
 //modified from boost examples: https://www.boost.org/doc/libs/1_69_0/libs/beast/example/http/client/async/http_client_async.cpp
 // Performs an HTTP GET and prints the response
 class session : public std::enable_shared_from_this<session>
 {
 	ip::tcp::resolver::results_type resolved;
-	ssl::stream<ip::tcp::socket> stream_;
-	boost::asio::deadline_timer timeout;
-	boost::beast::flat_buffer buffer_; // (Must persist between reads)
+	beast::ssl_stream<beast::tcp_stream> stream_;
+	beast::flat_buffer buffer_; // (Must persist between reads)
 	http::request<http::string_body> req_;
 	http::response<http::string_body> res_;
 	char const* host;
@@ -46,14 +47,13 @@ class session : public std::enable_shared_from_this<session>
 public:
 	// Resolver and socket require an io_context
 	explicit
-		session(boost::asio::io_context& ioc, ssl::context& sslCtx, ip::tcp::resolver::results_type resolved,
+		session(net::io_context& ioc, ssl::context& sslCtx, ip::tcp::resolver::results_type resolved,
 			char const* host,
 			char const* target,
 			std::string apiKey,
 			int version)
 		: resolved(resolved)
-		, stream_(ioc, sslCtx)
-		, timeout(ioc)
+		, stream_(net::make_strand(ioc), sslCtx)
 		, host(host)
 		, target(target)
 		, version(version)
@@ -67,7 +67,7 @@ public:
 	{
 		if (!SSL_set_tlsext_host_name(stream_.native_handle(), host))
 		{
-			boost::system::error_code ec{ static_cast<int>(::ERR_get_error()), boost::asio::error::get_ssl_category() };
+			beast::error_code ec{ static_cast<int>(::ERR_get_error()), net::error::get_ssl_category() };
 			std::cerr << ec.message() << std::endl;
 			return;
 		}
@@ -85,20 +85,10 @@ public:
 		req_.set(http::field::content_type, "application/json");
 		req_.set(http::field::content_length, body.size());
 
-		//cancel the request and close the socket on timeout
-		timeout.expires_from_now(boost::posix_time::seconds(2));
-		timeout.async_wait([&](boost::system::error_code const &ec) {
-			if (ec == boost::asio::error::operation_aborted) return;
-			stream_.async_shutdown(
-				std::bind(
-					&session::on_shutdown,
-					shared_from_this(),
-					std::placeholders::_1));
-		});
+		beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(2));
 
 		// Make the connection on the IP address we get from a lookup
-		boost::asio::async_connect(
-			stream_.next_layer(),
+		beast::get_lowest_layer(stream_).async_connect(
 			resolved.begin(),
 			resolved.end(),
 			std::bind(
@@ -108,12 +98,14 @@ public:
 	}
 
 	void
-		on_connect(boost::system::error_code ec)
+		on_connect(beast::error_code ec)
 	{
 		if (ec) {
 			std::cerr << "Connection error: " << ec.message() << std::endl;
 			return failHandler();
 		}
+
+		beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(2));
 
 		// Perform the SSL handshake
 		stream_.async_handshake(
@@ -125,12 +117,14 @@ public:
 	}
 
 	void
-		on_handshake(boost::system::error_code ec)
+		on_handshake(beast::error_code ec)
 	{
 		if (ec) {
 			std::cerr << "Handshake error: " << ec.message() << std::endl;
 			return failHandler();
 		}
+
+		beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(2));
 
 		// Send the HTTP request to the remote host
 		http::async_write(stream_, req_,
@@ -143,7 +137,7 @@ public:
 
 	void
 		on_write(
-			boost::system::error_code ec,
+			beast::error_code ec,
 			std::size_t bytes_transferred)
 	{
 		boost::ignore_unused(bytes_transferred);
@@ -152,6 +146,8 @@ public:
 			std::cerr << ec.message() << std::endl;
 			return;
 		}
+
+		beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(2));
 
 		// Receive the HTTP response
 		http::async_read(stream_, buffer_, res_,
@@ -164,10 +160,9 @@ public:
 
 	void
 		on_read(
-			boost::system::error_code ec,
+			beast::error_code ec,
 			std::size_t bytes_transferred)
 	{
-		timeout.cancel();
 		boost::ignore_unused(bytes_transferred);
 
 		if (ec) {
@@ -187,6 +182,8 @@ public:
 
 		processResponse(pt);
 
+		beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(2));
+
 		// Gracefully close the socket
 		stream_.async_shutdown(
 			std::bind(
@@ -198,7 +195,7 @@ public:
 	}
 
 	void
-		on_shutdown(boost::system::error_code ec)
+		on_shutdown(beast::error_code ec)
 	{
 		if (ec == boost::asio::error::eof)
 		{
