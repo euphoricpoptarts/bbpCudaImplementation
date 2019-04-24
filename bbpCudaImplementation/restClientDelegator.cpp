@@ -144,7 +144,7 @@ public:
 
 		if (ec) {
 			std::cerr << ec.message() << std::endl;
-			return;
+			return failHandler();
 		}
 
 		beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(2));
