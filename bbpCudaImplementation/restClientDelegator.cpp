@@ -6,6 +6,10 @@
 #include <boost/beast/ssl.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/property_tree/json_parser.hpp>
+#include <boost/chrono/system_clocks.hpp>
+#include <boost/chrono/time_point.hpp>
+#include <boost/chrono/io/time_point_io.hpp>
+#include <boost/chrono/io/timezone.hpp>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -28,6 +32,15 @@ namespace ip = net::ip;
 namespace http = boost::beast::http;
 namespace ssl = net::ssl;
 
+void failLog(std::string failedAt, std::string endpoint, beast::error_code ec) {
+	std::ofstream errorFile("error-log.txt", std::ofstream::app);
+	if (errorFile.is_open()) {
+		errorFile << "[" << boost::chrono::time_fmt(boost::chrono::timezone::local) << boost::chrono::system_clock::now() << "] ";
+		errorFile << endpoint << ": " << ec.message() << " @ " << failedAt << std::endl;
+		errorFile.close();
+	}
+}
+
 //modified from boost examples: https://www.boost.org/doc/libs/1_69_0/libs/beast/example/http/client/async/http_client_async.cpp
 // Performs an HTTP GET and prints the response
 class session : public std::enable_shared_from_this<session>
@@ -37,8 +50,8 @@ class session : public std::enable_shared_from_this<session>
 	beast::flat_buffer buffer_; // (Must persist between reads)
 	http::request<http::string_body> req_;
 	http::response<http::string_body> res_;
-	char const* host;
-	char const* target;
+	std::string host;
+	std::string endpoint;
 	int version;
 	std::function<void(const boost::property_tree::ptree&)> processResponse;
 	std::function<void()> failHandler;
@@ -48,14 +61,14 @@ public:
 	// Resolver and socket require an io_context
 	explicit
 		session(net::io_context& ioc, ssl::context& sslCtx, ip::tcp::resolver::results_type resolved,
-			char const* host,
-			char const* target,
+			std::string host,
+			std::string endpoint,
 			std::string apiKey,
 			int version)
 		: resolved(resolved)
 		, stream_(net::make_strand(ioc), sslCtx)
 		, host(host)
-		, target(target)
+		, endpoint(endpoint)
 		, version(version)
 		, apiKey(apiKey)
 	{
@@ -65,10 +78,10 @@ public:
 	void
 		run(std::function<void(const boost::property_tree::ptree&)> processResponse, std::function<void()> failHandler, std::string body, http::verb verb)
 	{
-		if (!SSL_set_tlsext_host_name(stream_.native_handle(), host))
+		if (!SSL_set_tlsext_host_name(stream_.native_handle(), host.c_str()))
 		{
 			beast::error_code ec{ static_cast<int>(::ERR_get_error()), net::error::get_ssl_category() };
-			std::cerr << ec.message() << std::endl;
+			failLog("ssl set host name", endpoint, ec);
 			return;
 		}
 
@@ -77,7 +90,7 @@ public:
 		// Set up an HTTP GET request message
 		req_.version(version);
 		req_.method(verb);
-		req_.target(target);
+		req_.target(endpoint);
 		req_.set(http::field::host, host);
 		req_.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
 		req_.set("apiKey", apiKey);
@@ -101,7 +114,7 @@ public:
 		on_connect(beast::error_code ec)
 	{
 		if (ec) {
-			std::cerr << "Connection error: " << ec.message() << std::endl;
+			failLog("connect", endpoint, ec);
 			return failHandler();
 		}
 
@@ -120,7 +133,7 @@ public:
 		on_handshake(beast::error_code ec)
 	{
 		if (ec) {
-			std::cerr << "Handshake error: " << ec.message() << std::endl;
+			failLog("handshake", endpoint, ec);
 			return failHandler();
 		}
 
@@ -143,7 +156,7 @@ public:
 		boost::ignore_unused(bytes_transferred);
 
 		if (ec) {
-			std::cerr << ec.message() << std::endl;
+			failLog("write", endpoint, ec);
 			return failHandler();
 		}
 
@@ -166,12 +179,13 @@ public:
 		boost::ignore_unused(bytes_transferred);
 
 		if (ec) {
-			std::cerr << ec.message() << std::endl;
+			failLog("read", endpoint, ec);
 			return failHandler();
 		}
 
 		if (res_.result_int() != 200) {
 			std::cerr << "Error response code: " << res_.result_int() << std::endl;
+			failLog("response", endpoint, ec);
 			return failHandler();
 		}
 
@@ -339,7 +353,7 @@ void restClientDelegator::processQueue(boost::asio::io_context& ioc, ssl::contex
 		apiCall * call = apiCallQueue.top();
 		std::string endpoint = "/api" + call->endpoint;
 		if (resolveStatus) {
-			std::make_shared<session>(ioc, sslCtx, resolvedResults, domain.c_str(), endpoint.c_str(), apiKey, 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
+			std::make_shared<session>(ioc, sslCtx, resolvedResults, domain, endpoint, apiKey, 11)->run(call->successHandle, call->failHandle, call->body, call->verb);
 		}
 		else {
 			resolveFailures.push(call);
