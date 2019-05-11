@@ -230,19 +230,19 @@ __device__ __noinline__ void modExpLeftToRight(uint64 exp, const uint64 & mod, u
 //this is possible because montgomery multiplication does not require we know 2^(63 + loops) % mod exactly, but requires we know a number congruent to 2^(63 + loops) % mod (as long as this number is less than 2^63)
 //div is inversely proportional to startMod ( div = 2^(63 + loops) / startMod )
 //montgomeryStart + n*div is < 2*mod for mod > 2^( (63 + loops + log(n*modCoefficient) ) / 2)
-__device__ __noinline__ void fastModApproximator(uint64 endMod, uint64 startExp, uint64 endExp, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div, int & shiftToLittleBit, int fasterModViable) {
+__device__ __noinline__ void fastModApproximator(uint64 endMod, uint64 expRangeHigh, uint64 expRangeLow, uint64 modCoefficient, uint64 & montgomeryStart, uint64 & div, int & shiftToLittleBit, int fasterModViable) {
 		div = twoTo63Power / endMod;
 
-		//selects the most significant four (or five if mod is large enough) bits of startExp and endExp
+		//selects the most significant four (or five if mod is large enough) bits of expRangeHigh and expRangeLow
 		//if these chosen bits match, then these bits are added to loops
 		//this part of the exponent will then be precomputed, so that the modular exponentiation routine may skip these bits
 		int sixty4MinusBitsToCompare = 60;
 		if (fasterModViable) sixty4MinusBitsToCompare = 59;
-		int largest4BitsShift = sixty4MinusBitsToCompare - __clzll(startExp);
+		int largest4BitsShift = sixty4MinusBitsToCompare - __clzll(expRangeHigh);
 		int loops = 2;
-		if ((startExp >> largest4BitsShift) == (endExp >> largest4BitsShift)) {
+		if ((expRangeHigh >> largest4BitsShift) == (expRangeLow >> largest4BitsShift)) {
 			shiftToLittleBit = sixty4MinusBitsToCompare;
-			loops = 1 + (startExp >> largest4BitsShift);
+			loops = 1 + (expRangeHigh >> largest4BitsShift);
 		}
 
 
@@ -259,8 +259,8 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 & 
 
 	//depending on the size of the smallest mod a thread will operate on
 	//these variables determine which optimizations are viable
-	//need to check that startExp used in fastModApproximator is greater than 64 (compare to 128 because we haven't subtracted 64 yet to prevent underflow)
-	//as startExp must have at least 5 bits for fastModApproximator to work (128 looks sleeker than 96)
+	//need to check that expRangeHigh used in fastModApproximator is greater than 64 (compare to 128 because we haven't subtracted 64 yet to prevent underflow)
+	//as expRangeHigh must have at least 5 bits for fastModApproximator to work (128 looks sleeker than 96)
 	int fastModViable = (modCoefficient * start + startingMod) > fastModLimit && (startingExponent - start*10LLU) > 128;
 	int fasterModViable = (modCoefficient * start + startingMod) > fastModULTRAINSTINCT;
 	uint64 montgomeryStart, div;
