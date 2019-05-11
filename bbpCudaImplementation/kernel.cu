@@ -259,11 +259,15 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 & 
 
 	//depending on the size of the smallest mod a thread will operate on
 	//these variables determine which optimizations are viable
-	//need to check that expRangeHigh used in fastModApproximator is greater than 64 (compare to 128 because we haven't subtracted 64 yet to prevent underflow)
-	//as expRangeHigh must have at least 5 bits for fastModApproximator to work (128 looks sleeker than 96)
+
+	//need to check that expRangeHigh used in fastModApproximator has at least 5 bits so that fastModApproximator will not attempt a negative bitshift
+	//this means it must be >=32, but we must compare without subtracting 64 to avoid underflow; so that value must be >=96 (128 works too)
+	//as a byproduct, fastModApproximator will never be given an underflowed value for expRangeHigh
+	//fastModApproximator will work even if expRangeLow has underflowed (for all reasonable values of start and end), as the post-bitshift values won't be equal
 	int fastModViable = (modCoefficient * start + startingMod) > fastModLimit && (startingExponent - start*10LLU) > 128;
 	int fasterModViable = (modCoefficient * start + startingMod) > fastModULTRAINSTINCT;
 	uint64 montgomeryStart, div;
+
 	//shiftToLittleBit is used to find how many total squarings are needed in exponentiation
 	//63 computes all necessary squarings
 	//every 1 less will skip a squaring
