@@ -27,6 +27,25 @@ This allows us to use a number that is either equal or congruent about the modul
 This might not be the best place to discuss exactly how this works, so I might make a blog post about it and link to it from here.  
 This improvement increases performance by about 6-8%.
 
+## Setup  
+# Dependencies  
+Boost v1.70: Download here https://www.boost.org/users/history/version_1_70_0.html  
+Add to Include Directories: (boost_location)\boost  
+To install libs: run bootstrap, run b2, run bjam (will create stage directory)  
+Add to Additional Libraries Directories: (boost_location)\stage\lib  
+
+OpenSSL: Use the installer here http://slproweb.com/products/Win32OpenSSL.html  
+Add to Include Directories: (openssl_location)\include  
+Add to Additional Libraries Directories: (openssl_location)\lib
+Add to Linker Additional Dependencies: "libssl.lib;libcrypto.lib;" (no quotes)  
+
+Cuda Toolkit v9+:  
+Right click the solution in the solution explorer, select Build Dependencies -> Build Customizations  
+Check the box for your installed version of the Cuda Toolkit  
+
+#Compile  
+C++17 (<filesystem>)
+
 ## Configuration
 application.properties specifies the following:  
 strideMultiplier: number of sum terms computed by each thread  
@@ -37,7 +56,10 @@ benchmarkTrials: number of trials for each blockCount in benchmark
 benchmarkTarget: digit of pi to use for benchmark  
 benchmarkStartingBlockCount: start of benchmark range (inclusive)  
 benchmarkBlockCountIncrement: amount to increment block count  
-benchmarkTotalIncrements: number of times to increment blockCount and rerun benchmark
+benchmarkTotalIncrements: number of times to increment blockCount and rerun benchmark  
+apiKey: self-explanatory  
+domain: inanepipun.com  
+port: 443  
 
 ## Digits Calculated and Times
 Note that only the first ~25-27 digits of each are correct.
