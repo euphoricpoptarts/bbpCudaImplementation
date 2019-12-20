@@ -36,7 +36,7 @@ Add to Additional Libraries Directories: (boost_location)\stage\lib
 
 OpenSSL: Use the installer here http://slproweb.com/products/Win32OpenSSL.html  
 Add to Include Directories: (openssl_location)\include  
-Add to Additional Libraries Directories: (openssl_location)\lib
+Add to Additional Libraries Directories: (openssl_location)\lib  
 Add to Linker Additional Dependencies: "libssl.lib;libcrypto.lib;" (no quotes)  
 
 Cuda Toolkit v9+:  
