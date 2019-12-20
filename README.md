@@ -28,7 +28,7 @@ This might not be the best place to discuss exactly how this works, so I might m
 This improvement increases performance by about 6-8%.
 
 ## Setup  
-# Dependencies  
+### Dependencies  
 Boost v1.70: Download here https://www.boost.org/users/history/version_1_70_0.html  
 Add to Include Directories: (boost_location)\boost  
 To install libs: run bootstrap, run b2, run bjam (will create stage directory)  
@@ -43,8 +43,8 @@ Cuda Toolkit v9+:
 Right click the solution in the solution explorer, select Build Dependencies -> Build Customizations  
 Check the box for your installed version of the Cuda Toolkit  
 
-#Compile  
-C++17 (<filesystem>)
+### Compile  
+C++17 (for std::filesystem)
 
 ## Configuration
 application.properties specifies the following:  
