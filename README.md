@@ -44,12 +44,16 @@ Right click the solution in the solution explorer, select Build Dependencies -> 
 Check the box for your installed version of the Cuda Toolkit  
 
 ### Compile  
-C++17 (for std::filesystem)
+C++17 (for std::filesystem)  
+
+### Ensure Runtime Assumptions  
+Create two directories named "completed" and "progressCache" in the directory in which you will run the executable  
+Create a file named "application.properties"; see next section for details  
 
 ## Configuration
 application.properties specifies the following:  
-strideMultiplier: number of sum terms computed by each thread  
-blockCount: blockCount  
+strideMultiplier: number of sum terms computed by each thread; set to 64  
+blockCount: blockCount; choose a multiple of the number of SMs on your GPU  
 primaryGpu: 1 for a delay between kernel launches, 0 for no delay  
 controlType: 0 to input which digit of pi to calculate manually or use command line options; 1 to cede control to restful service; 2 to run benchmark  
 benchmarkTrials: number of trials for each blockCount in benchmark  
