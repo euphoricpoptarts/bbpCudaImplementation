@@ -24,7 +24,7 @@ The realization that squaring by montgomery multiplication can be used for input
 leads to further optimizations applicable to sequences of moduli.  
 
 In detail, given some N and two moduli M1 and M2 such that M2 < M1, we calculate (N % M1) and (N / M1).  
-We can calculate (N % M2) is congruent to (N % M1) + (M1 - M2)*(N / M1). Assuming that N < M2*M1/(M1 - M2), the result will be less than 2*M2.
+We can calculate (N % M2) is congruent to (N % M1) + (M1 - M2)\*(N / M1). Assuming that N < M2\*M1/(M1 - M2), the result will be less than 2\*M2.
 This is acceptable because we do not need (N % M2) precisely, but a number congruent to it.  
 In order to amortize the expensive operations (N % M1) and (N / M1), we will apply this to a sequence of numbers M1 > M2 > M3 ... MX.  
 If the bound is satisfied for the pair M1 and MX, than it is also satisfied for any pair MI and MJ.  
@@ -76,7 +76,23 @@ domain: inanepipun.com
 port: 443  
 
 ## Digits Calculated and Times
-Note that only the first ~25-27 digits of each are correct.
+Note that only the first ~23-27 digits of each are correct.
+
+250 Quadrillionth Hex-digit: 11CF F914 2793 1405 B49D DFBA 1769 7A5C  
+Note: This computation was performed in 250,000 segments using 3 different machines.  
+Cumulative GPU time: 123556906.87752464 seconds  
+Real time: 23554328.191 seconds  
+Hardware: (Rig 1) 4x RTX 2080 Ti Black (Factory Clocks)  
+(Rig 2) 4x RTX 2080 Ti Black (Factory Clocks)  
+(Rig 3) 4x RTX 2080 Ti Black (Factory Clocks)
+
+250 Quadrillion - 1 Hex-digit: 211C FF91 4279 3140 5B49 DDFB 96E8 3F56  
+Note: This computation was performed in 250,000 segments using 3 different machines.  
+Cumulative GPU time: 123554811.02936138 seconds  
+Real time: 23554330.576 seconds  
+Hardware: (Rig 1) 4x RTX 2080 Ti Black (Factory Clocks)  
+(Rig 2) 4x RTX 2080 Ti Black (Factory Clocks)  
+(Rig 3) 4x RTX 2080 Ti Black (Factory Clocks)
 
 10 Quadrillionth Hex-digit: 9077 E016 4B9C 613F D6C7 F170 CAE7 263E  
 Note: This computation was performed in 40 segments using 2 different machines.  
