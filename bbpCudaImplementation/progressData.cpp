@@ -387,9 +387,9 @@ void progressData::progressCheck() {
 			requestWork();
 		}
 
-		if (timeEst < 0.5) {
+		//if (timeEst < 0.5) {
 			this->quit = areLaunchersComplete();
-		}
+		//}
 		if (this->digit->remoteId > 0 && checkToStop.exchange(0) == this->digit->remoteId) {
 			this->quit = true;
 		}
