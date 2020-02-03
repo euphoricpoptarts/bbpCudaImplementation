@@ -53,8 +53,9 @@ Cuda Toolkit v9+:
 Right click the solution in the solution explorer, select Build Dependencies -> Build Customizations  
 Check the box for your installed version of the Cuda Toolkit  
 
-### Compile  
-C++17 (for std::filesystem)  
+### C++ Language Standard  
+C++14: Recommended  
+C++17: Not as thoroughly tested, requires you to change std::experimental::filesystem in progressData.cpp to std::filesystem.  
 
 ### Ensure Runtime Assumptions  
 Create two directories named "completed" and "progressCache" in the directory in which you will run the executable  
