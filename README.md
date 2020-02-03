@@ -20,16 +20,26 @@ This implementation has several algorithmic improvements. The conditional subtra
 However, the bitshift required during left-to-right modular exponentiation loop decreases the domain of correctness to moduli < 2^60. This allows correct computation for pi up to the ~288 quadrillionth hex-digits.  
 This improvement increases performance by about 20-25%. The domain of correctness can be extended to moduli < 2^62 by uncommenting the conditional subtraction after the previously mentioned bitshift.
 
-The realization that squaring by montgomery multiplication can be used for inputs n greater than the modulus but which satisfy (n^2) / 2^64 < mod (and if multiple sequential squarings are performed this bound can widen),
-has led to an optimization of the transformations of 2 into the montgomery domain for a group of moduli.  
-Particularly, it is possible to perform this transformation exactly for one montgomery domain, and then reuse it for a number of other montgomery domains with moduli whose difference from the original moduli is small.  
-This allows us to use a number that is either equal or congruent about the modulus to 2 in the montgomery domain, for the cost of one addition per additional domain.  
-This might not be the best place to discuss exactly how this works, so I might make a blog post about it and link to it from here.  
-This improvement increases performance by about 6-8%.
+The realization that squaring by montgomery multiplication can be used for inputs Y congruent to (X % M) but which satisfy (Y^2) / 2^64 < M (and if multiple sequential squarings are performed this bound can widen),
+leads to further optimizations applicable to sequences of moduli.  
+
+In detail, given some N and two moduli M1 and M2 such that M2 < M1, we calculate (N % M1) and (N / M1).  
+We can calculate (N % M2) is congruent to (N % M1) + (M1 - M2)*(N / M1). Assuming that N < M2*M1/(M1 - M2), the result will be less than 2*M2.
+This is acceptable because we do not need (N % M2) precisely, but a number congruent to it.  
+In order to amortize the expensive operations (N % M1) and (N / M1), we will apply this to a sequence of numbers M1 > M2 > M3 ... MX.  
+If the bound is satisfied for the pair M1 and MX, than it is also satisfied for any pair MI and MJ.  
+In this program, note that (M1 - M2) = (M2 - M3) = (M3 - M4) ...  
+We calculate (N % M1) and (M1 - M2)*(N / M1) one time, allowing us to calculate every successive (N % MI) at the cost of one addition operation.  
+
+To calculate 2 in Montgomery space for a sequence of moduli, N shall be 2^65. This increases performance by about 6-8%.  
+
+This can also be extended to precompute the first 4-5 bits of the exponents for a sequence of moduli.  
+This is subject to condition that the most significant 4-5 bits of the exponents corresponding to each moduli are the same for the entire sequence.  
+Let X be the value of these most significant bits, N shall be 2^(64 + 2^X). This increases performace by about another 5%.
 
 ## Configuration
 application.properties specifies the following:  
-strideMultiplier: number of sum terms computed by each thread  
+strideMultiplier: number of sum terms computed by each thread (64 or 128 are good values)  
 blockCount: blockCount  
 primaryGpu: 1 for a delay between kernel launches, 0 for no delay  
 controlType: 0 to input which digit of pi to calculate manually or use command line options; 1 to cede control to restful service; 2 to run benchmark  
