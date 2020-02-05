@@ -255,7 +255,7 @@ __device__ __noinline__ void fastModApproximator(uint64 endMod, uint64 expRangeH
 }
 
 //computes strideMultiplier # of summation terms
-__device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 & startingMod, uint64 modCoefficient, int negative, uint128* output, uint64* progress) {
+__device__ void bbp(uint64 startingExponent, uint64 iterationRangeLow, uint64 iterationRangeHigh, uint64 & modRangeHigh, uint64 modCoefficient, int negative, uint128* output, uint64* progress) {
 
 	//depending on the size of the smallest mod a thread will operate on
 	//these variables determine which optimizations are viable
@@ -264,8 +264,8 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 & 
 	//this means it must be >=32, but we must compare without subtracting 64 to avoid underflow; so that value must be >=96 (128 works too)
 	//as a byproduct, fastModApproximator will never be given an underflowed value for expRangeHigh
 	//fastModApproximator will work even if expRangeLow has underflowed (for all reasonable values of start and end), as the post-bitshift values won't be equal
-	int fastModViable = (modCoefficient * start + startingMod) > fastModLimit && (startingExponent - start*10LLU) > 128;
-	int fasterModViable = (modCoefficient * start + startingMod) > fastModULTRAINSTINCT;
+	int fastModViable = (modCoefficient * iterationRangeLow + modRangeHigh) > fastModLimit && (startingExponent - iterationRangeLow*10LLU) > 128;
+	int fasterModViable = (modCoefficient * iterationRangeLow + modRangeHigh) > fastModULTRAINSTINCT;
 	uint64 montgomeryStart, div;
 
 	//shiftToLittleBit is used to find how many total squarings are needed in exponentiation
@@ -273,14 +273,14 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 & 
 	//every 1 less will skip a squaring
 	int shiftToLittleBit = 63;
 
-	if(fastModViable) fastModApproximator(modCoefficient * end + startingMod, startingExponent - 64 - start*10LLU, startingExponent - 64 - end*10LLU, modCoefficient, montgomeryStart, div, shiftToLittleBit, fasterModViable);
+	if(fastModViable) fastModApproximator(modCoefficient * iterationRangeHigh + modRangeHigh, startingExponent - 64 - iterationRangeLow*10LLU, startingExponent - 64 - iterationRangeHigh*10LLU, modCoefficient, montgomeryStart, div, shiftToLittleBit, fasterModViable);
 	
 	//go backwards so we can add div instead of subtracting it
 	//subtracting produces a likelihood of underflow (whereas addition will not cause overflow for any mod where 2^8 < mod < (2^64 - 2^8) )
 	//also condition is (k + 1) > start as opposed to k >= start because if start is 0 then k >= start has no end condition
-	for (uint64 k = end; (k + 1) > start; k--) {
+	for (uint64 k = iterationRangeHigh; (k + 1) > iterationRangeLow; k--) {
 		uint64 exp = startingExponent - (k*10LLU);
-		uint64 mod = modCoefficient * k + startingMod;
+		uint64 mod = modCoefficient * k + modRangeHigh;
 		if(!fastModViable) {
 			montgomeryStart = twoTo63Power % mod;
 			montgomeryStart <<= 1;
@@ -297,8 +297,8 @@ __device__ void bbp(uint64 startingExponent, uint64 start, uint64 end, uint64 & 
 
 	//send some progress information to the host device
 	//once per 2^20/strideMultiplier threads
-	if (((end + 1) & 0xfffff) <= (start & 0xfffff) && end > start) {
-		atomicMax(progress, end);
+	if (((iterationRangeHigh + 1) & 0xfffff) <= (iterationRangeLow & 0xfffff) && iterationRangeHigh > iterationRangeLow) {
+		atomicMax(progress, iterationRangeHigh);
 	}
 }
 
