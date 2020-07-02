@@ -5,11 +5,7 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-#ifdef __linux__
-#include <experimental/filesystem>
-#elif _WIN64
 #include <filesystem>
-#endif
 #include <algorithm>
 #include <atomic>
 #include <vector>
