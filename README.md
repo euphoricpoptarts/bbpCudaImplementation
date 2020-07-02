@@ -11,7 +11,9 @@ This thread awaits the completion of the GPU threads and then tells the progress
 The user can specify a benchmarking run in the configuration files, which can run a number of trials for a given digit of pi and for a range of block counts.
 
 Optionally, the program may run under the control of a RESTful service. This service is still under construction.  
-The rest-client in this program is built using the Boost Asio and Beast libraries.
+The rest-client in this program is built using the Boost Asio and Beast libraries.  
+
+Build options include CMake and Visual Studio.
 
 ## Algorithms and Novelty of Implementation
 The algorithm in use has been adapted to closely match the one presented in Daisuke Takahashi's paper: http://plouffe.fr/simon/1-s2.0-S0167819118300334-main.pdf  
@@ -37,7 +39,22 @@ This can also be extended to precompute the first 4-5 bits of the exponents for 
 This is subject to condition that the most significant 4-5 bits of the exponents corresponding to each moduli are the same for the entire sequence.  
 Let X be the value of these most significant bits, N shall be 2^(64 + 2^X). This increases performace by about another 5%.
 
-## Setup  
+## Linux CMake Setup
+### Dependencies
+CMake version 3.13  
+Boost v1.70: Download here https://www.boost.org/users/history/version_1_70_0.html  
+To install Boost: "bash bootstrap.sh", then "./b2 install" (consider using -jX to use more threads for quicker installation)  
+OpenSSL: use relevant distro command (e.g. snap, yum, apt-get) to install libssl-dev  
+Cuda Toolkit v9+: Follow platform relevant Cuda install instructions https://developer.nvidia.com/cuda-10.2-download-archive  
+
+### C++ Language Standard
+C++17: Recommended
+
+### Ensure Runtime Assumptions  
+Create two directories named "completed" and "progressCache" in the directory in which you will run the executable  
+Create a file named "application.properties" in aforementioned directory; see Configuration section for details  
+
+## Visual Studio Setup  
 ### Dependencies  
 Boost v1.70: Download here https://www.boost.org/users/history/version_1_70_0.html  
 Add to Include Directories: (boost_location)\boost  
@@ -54,8 +71,7 @@ Right click the solution in the solution explorer, select Build Dependencies -> 
 Check the box for your installed version of the Cuda Toolkit  
 
 ### C++ Language Standard  
-C++14: Recommended  
-C++17: Not as thoroughly tested, requires you to change std::experimental::filesystem in progressData.cpp to std::filesystem.  
+C++17: Recommended
 
 ### Ensure Runtime Assumptions  
 Create two directories named "completed" and "progressCache" in the directory in which you will run the executable  
@@ -70,7 +86,7 @@ controlType: 0 to input which digit of pi to calculate manually or use command l
 benchmarkTrials: number of trials for each blockCount in benchmark  
 benchmarkTarget: digit of pi to use for benchmark  
 benchmarkStartingBlockCount: start of benchmark range (inclusive)  
-benchmarkBlockCountIncrement: amount to increment block count  
+benchmarkBlockCountIncrement: amount to increment block count (must be nonzero even if no blockcount-scan is desired)  
 benchmarkTotalIncrements: number of times to increment blockCount and rerun benchmark  
 apiKey: self-explanatory  
 domain: inanepipun.com  
