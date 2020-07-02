@@ -14,6 +14,7 @@
 #include <atomic>
 #include <vector>
 #include <list>
+#include <condition_variable>
 #include "kernel.cuh"
 #include "bbpLauncher.h"
 #include "digitData.h"
