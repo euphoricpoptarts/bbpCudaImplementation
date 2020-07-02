@@ -5,6 +5,7 @@
 #include <thread>
 #include <iostream>
 #include <iomanip>
+#include <algorithm>
 #include <fstream>
 #include <map>
 #include <string>
@@ -172,7 +173,8 @@ int loadProperties() {
 }
 
 int benchmark() {
-	digitData data(benchmarkTarget, 1, 1);
+	std::cout << "Starting benchmark" << std::endl;
+	digitData data(benchmarkTarget, 1, 0);
 	if (data.error != cudaSuccess) return 1;
 	bbpLauncher gpuData(&data, 0);
 	std::vector<std::pair<double, int>> timings;
@@ -193,7 +195,7 @@ int benchmark() {
 	}
 	std::sort(timings.begin(), timings.end());
 	std::cout << "Fastest block counts:" << std::endl;
-	for (int i = 0; i < 10; i++) {
+	for (int i = 0; i < std::min(10, (int)timings.size()); i++) {
 		std::cout << timings.at(i).second << " blocks at " << timings.at(i).first << " seconds." << std::endl;
 	}
 	return 0;
