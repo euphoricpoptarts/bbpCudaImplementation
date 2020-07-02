@@ -146,7 +146,7 @@ bool progressData::checkForProgressCache() {
 	std::string pToFile;
 	std::vector<std::string> matching;
 	int found = 0;
-	for (auto& element : std::experimental::filesystem::directory_iterator("progressCache")) {
+	for (auto& element : std::filesystem::directory_iterator("progressCache")) {
 		std::string name = element.path().filename().string();
 		//filename begins with desired string
 		if (name.compare(0, this->progressFilenamePrefix.length(), this->progressFilenamePrefix) == 0) {

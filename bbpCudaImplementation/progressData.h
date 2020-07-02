@@ -12,6 +12,8 @@
 #endif
 #include <algorithm>
 #include <atomic>
+#include <vector>
+#include <list>
 #include "kernel.cuh"
 #include "bbpLauncher.h"
 #include "digitData.h"
