@@ -1,4 +1,3 @@
-#pragma once
 #include <stdio.h>
 #include <math.h>
 #include <chrono>
@@ -267,7 +266,6 @@ int main(int argc, char** argv) {
 	digitData data(hexDigitPosition, segments, segmentNumber);
 	if (data.error != cudaSuccess) return 1;
 
-	std::thread * handles = new std::thread[totalGpus];
 	std::vector<bbpLauncher*> gpuData;
 	
 	progressData prog(&data);

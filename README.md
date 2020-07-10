@@ -46,6 +46,7 @@ Boost v1.70: Download here https://www.boost.org/users/history/version_1_70_0.ht
 To install Boost: "bash bootstrap.sh", then "./b2 install" (consider using -jX to use more threads for quicker installation)  
 OpenSSL: use relevant distro command (e.g. snap, yum, apt-get) to install libssl-dev  
 Cuda Toolkit v9+: Follow platform relevant Cuda install instructions https://developer.nvidia.com/cuda-10.2-download-archive  
+GPU Dependent Config: Edit CMakeLists.txt and set -arch=sm_XX where XX is specific to your GPU (e.g. 75 for Turing GPUs)
 
 ### C++ Language Standard
 C++17: Recommended
