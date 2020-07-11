@@ -13,7 +13,9 @@
 #include "progressData.h"
 #include "bbpLauncher.h"
 #include "digitData.h"
+#ifndef NO_BOOST
 #include "restClientDelegator.h"
+#endif
 
 namespace chr = std::chrono;
 uint64 segments = 1;
@@ -163,9 +165,11 @@ int loadProperties() {
 	startBlocks = std::stoi(properties.at(propertyNames.BENCHMARKSTARTINGBLOCKCOUNT));
 	blocksIncrement = std::stoi(properties.at(propertyNames.BENCHMARKBLOCKCOUNTINCREMENT));
 	incrementLimit = std::stoi(properties.at(propertyNames.BENCHMARKTOTALINCREMENTS));
+#ifndef NO_BOOST
 	apiKey = properties.at(propertyNames.APIKEY);
 	domain = properties.at(propertyNames.DOMAINNAME);
 	targetPort = properties.at(propertyNames.PORT);
+#endif
 	if (segments == 0) segments = 1;
 
 	return 0;
@@ -201,6 +205,9 @@ int benchmark() {
 }
 
 int controlViaClient(int totalGpus) {
+#ifdef NO_BOOST
+	std::cerr << "Boost libraries not found at compile time, RESTful client control type not available!" << std::endl;
+#else
 	restClientDelegator delegator;
 	std::vector<bbpLauncher*> launchers;
 	for (int i = 0; i < totalGpus; i++) {
@@ -226,6 +233,7 @@ int controlViaClient(int totalGpus) {
 	for (bbpLauncher* launcher : launchers) delete launcher;
 	launchers.clear();
 
+#endif
 	return 0;
 }
 

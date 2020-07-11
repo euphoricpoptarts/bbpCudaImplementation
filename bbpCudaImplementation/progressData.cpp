@@ -1,5 +1,7 @@
 #include "progressData.h"
+#ifndef NO_BOOST
 #include "restClientDelegator.h"
+#endif
 
 class inertialDouble {
 private:
@@ -82,13 +84,17 @@ std::string progressData::controlledUuids() {
 }
 
 void progressData::requestWork() {
+#ifndef NO_BOOST
 	delegator->addWorkGetToQueue(this);
 	workRequested = true;
+#endif
 }
 
 void progressData::sendResult(uint128 result, double time) {
+#ifndef NO_BOOST
 	delegator->addResultPutToQueue(digit, result, time);
 	delete digit;
+#endif
 }
 
 void progressData::blockForWork() {
@@ -349,7 +355,9 @@ void progressData::progressCheck() {
 		//only update server every second
 		if (chr::duration_cast<chr::duration<double>>(now - lastServerProgUpdate).count() >= 1.0) {
 			lastServerProgUpdate += chr::seconds(1);
+#ifndef NO_BOOST
 			if(this->hasDelegator) delegator->addReservationExtensionPutToQueue(this->digit, 100.0*progress, elapsedTime, this);
+#endif
 		}
 
 		bool resultsReady = true;
@@ -377,7 +385,9 @@ void progressData::progressCheck() {
 			}
 
 			if (!cacheMisaligned) {
+#ifndef NO_BOOST
 				if(this->hasDelegator) delegator->addProgressUpdatePutToQueue(digit, currStatus, contProcess, elapsedTime);
+#endif
 				writeCache(contProcess, currStatus, elapsedTime);
 			}
 		}
