@@ -42,11 +42,14 @@ Let X be the value of these most significant bits, N shall be 2^(64 + 2^X). This
 ## Linux CMake Setup
 ### Dependencies
 CMake version 3.13  
+Cuda Toolkit v9+: Follow platform relevant Cuda install instructions https://developer.nvidia.com/cuda-10.2-download-archive  
+GPU Dependent Config: Edit CMakeLists.txt and set -arch=sm_XX where XX is specific to your GPU (e.g. 75 for Turing GPUs)
+
+#### Optional
 Boost v1.70: Download here https://www.boost.org/users/history/version_1_70_0.html  
 To install Boost: "bash bootstrap.sh", then "./b2 install" (consider using -jX to use more threads for quicker installation)  
 OpenSSL: use relevant distro command (e.g. snap, yum, apt-get) to install libssl-dev  
-Cuda Toolkit v9+: Follow platform relevant Cuda install instructions https://developer.nvidia.com/cuda-10.2-download-archive  
-GPU Dependent Config: Edit CMakeLists.txt and set -arch=sm_XX where XX is specific to your GPU (e.g. 75 for Turing GPUs)
+If Boost is not found the executable will still build, but control by RESTful service will not be available at runtime.
 
 ### C++ Language Standard
 C++17: Recommended
@@ -57,6 +60,11 @@ Create a file named "application.properties" in aforementioned directory; see Co
 
 ## Visual Studio Setup  
 ### Dependencies  
+Cuda Toolkit v9+:  
+Right click the solution in the solution explorer, select Build Dependencies -> Build Customizations  
+Check the box for your installed version of the Cuda Toolkit  
+
+#### Optional
 Boost v1.70: Download here https://www.boost.org/users/history/version_1_70_0.html  
 Add to Include Directories: (boost_location)\boost  
 To install libs: run bootstrap, run b2, run bjam (will create stage directory)  
@@ -67,9 +75,8 @@ Add to Include Directories: (openssl_location)\include
 Add to Additional Libraries Directories: (openssl_location)\lib  
 Add to Linker Additional Dependencies: "libssl.lib;libcrypto.lib;" (no quotes)  
 
-Cuda Toolkit v9+:  
-Right click the solution in the solution explorer, select Build Dependencies -> Build Customizations  
-Check the box for your installed version of the Cuda Toolkit  
+If you wish to build without these then add NO_BOOST to your preprocessor definitions. Then exclude restClientDelegator.cpp from the project.  
+The resulting executable will not have the option to use the RESTful service control type.
 
 ### C++ Language Standard  
 C++17: Recommended
