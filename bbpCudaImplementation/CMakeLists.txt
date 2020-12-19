@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.13)
-project(bbp CXX CUDA)
+project(bbp LANGUAGES CXX CUDA)
+find_package(CUDAToolkit)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 #arch must be changed to match your GPU
-set(CMAKE_CUDA_FLAGS "-arch=sm_75")
+set(CMAKE_CUDA_ARCHITECTURES 8.6)
 
 find_package(Boost 1.70.0 EXACT COMPONENTS system chrono)
 IF(Boost_FOUND)
@@ -16,3 +17,4 @@ ELSE()
 	add_definitions(-DNO_BOOST)
 	add_executable(bbp main.cpp bbpLauncher.cpp digitData.cpp progressData.cpp kernel.cu)
 ENDIF()
+target_link_libraries(bbp CUDA::cudart)
