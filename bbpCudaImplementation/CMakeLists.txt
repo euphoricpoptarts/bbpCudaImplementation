@@ -1,13 +1,13 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.17)
 project(bbp LANGUAGES CXX CUDA)
 find_package(CUDAToolkit)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 #arch must be changed to match your GPU
-set(CMAKE_CUDA_ARCHITECTURES 8.6)
+set(CMAKE_CUDA_ARCHITECTURES 86)
 
 find_package(Boost 1.70.0 EXACT COMPONENTS system chrono)
-IF(Boost_FOUND)
+IF(0)
 	set(OPENSSL_USE_STATIC_LIBS TRUE)
 	find_package(OpenSSL REQUIRED)
 
