@@ -285,6 +285,7 @@ void progressData::beginWorking() {
 void progressData::runSingleWorkUnit() {
 	this->quit = 0;
 	if (!checkForProgressCache()) return;
+    std::cout << "Beginning computation of hex digit " << this->digit->digitPos << std::endl;
 	beginWorkUnit();
 	progressCheck();
 	uint128 result;
