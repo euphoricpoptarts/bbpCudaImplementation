@@ -23,6 +23,12 @@ public:
 };
 
 void progressData::writeCache(uint64 cacheEnd, uint128 cacheData, double elapsedTime) {
+
+    if(!this->cacheDirExists){
+        std::cerr << "The progressCache directory does not exist! Can't save progress!" << std::endl;
+        return;
+    }
+
 	char buffer[256];
 
 	//minus 1 because cache range is [segmentBegin, contProcess)
@@ -152,7 +158,16 @@ bool progressData::checkForProgressCache() {
 	std::string pToFile;
 	std::vector<std::string> matching;
 	int found = 0;
-	for (auto& element : std::filesystem::directory_iterator("progressCache")) {
+    std::filesystem::path cacheDir("progressCache");
+    if(!std::filesystem::exists(cacheDir)){
+        std::cout << "Could not find progressCache in the current directory because it does not exist. Please create progressCache as a directory in order to use progress saving feature!" << std::endl;
+        return true;
+    } else if(!std::filesystem::is_directory(cacheDir)){
+        std::cout << "Found progressCache in the current directory but it is not a directory. Please create progressCache as a directory in order to use progress saving feature!" << std::endl;
+        return true;
+    }
+    this->cacheDirExists = true;
+	for (auto& element : std::filesystem::directory_iterator(cacheDir)) {
 		std::string name = element.path().filename().string();
 		//filename begins with desired string
 		if (name.compare(0, this->progressFilenamePrefix.length(), this->progressFilenamePrefix) == 0) {

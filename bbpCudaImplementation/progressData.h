@@ -34,6 +34,7 @@ private:
 	bool workAssigned = false;
 	bool workRequested = false;
 	bool hasDelegator = false;
+    bool cacheDirExists = false;
 	restClientDelegator * delegator;
 	std::condition_variable cv;
 	std::atomic<uint64> checkToStop;
