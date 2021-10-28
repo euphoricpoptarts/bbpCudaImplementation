@@ -264,7 +264,7 @@ void progressData::beginWorking() {
 		beginWorkUnit();
 		progressCheck();
 		uint128 result;
-		double time;
+		double time = 0;
 		if (fetchResultFromLaunchers(result, time)) {
 			printf("result of work-unit is %016llX %016llX\n",
 				result.msw, result.lsw);
@@ -289,7 +289,7 @@ void progressData::runSingleWorkUnit() {
 	beginWorkUnit();
 	progressCheck();
 	uint128 result;
-	double time;
+	double time = 0;
 	if (fetchResultFromLaunchers(result, time)) {
 		sJAdd(&result, &previousCache);
 

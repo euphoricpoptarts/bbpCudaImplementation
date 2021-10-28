@@ -50,7 +50,7 @@ private:
 
 public:
 	uint128 previousCache;
-	double previousTime;
+	double previousTime = 0;
 	volatile int quit = 0;
 	chr::steady_clock::time_point begin;
 
