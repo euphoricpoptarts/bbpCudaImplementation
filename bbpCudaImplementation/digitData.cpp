@@ -1,6 +1,6 @@
 #include "digitData.h"
 #include <algorithm>
-
+#include <cstdio>
 
 digitData::digitData(const digitData& toCopy) {
 	//no copy should need the old currentProgress and deviceProg

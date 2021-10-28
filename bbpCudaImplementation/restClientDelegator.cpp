@@ -1,5 +1,5 @@
+#ifndef NO_BOOST
 #include "restClientDelegator.h"
-
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
@@ -404,3 +404,4 @@ void restClientDelegator::monitorQueues() {
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));//rest between checking the queues for work
 	}
 }
+#endif
